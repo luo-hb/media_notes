@@ -1,0 +1,21 @@
+https://mapshaper.org/
+根据 字段  layer_code  合并
+$ -dissolve layer_code
+
+// allow-overlaps  允许面重叠
+
+清除面之间的空隙
+$ -clean snap-interval=0.0001 
+$ -clean snap-interval=0.001 
+$ -clean snap-interval=0.01 
+$ -clean snap-interval=0.1 
+$ -clean snap-interval=1
+$ -clean snap-interval=10
+
+清除隙小面 
+$ -clean gap-fill-area=0.0001
+$ -clean gap-fill-area=0.001
+$ -clean gap-fill-area=0.01
+$ -clean gap-fill-area=0.1
+$ -clean gap-fill-area=1
+$ -clean gap-fill-area=10
