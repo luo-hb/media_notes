@@ -50,3 +50,5 @@ overlay.setOption({
 - 插件会对 `scatter`、`effectScatter`、`lines`、`heatmap`、`custom` 自动补 `coordinateSystem: 'leaflet'`
 - 推荐使用现代 ECharts 5 系列写法，不再兼容 ECharts 2 的 `markPoint/markLine/mapType:'none'`
 - 地图移动/缩放时，插件只负责重绘 ECharts，不会改 Leaflet 的底图和地图配置
+- 
+- 本项目是基于 github 的 wandergis大佬作者，开源的项目，https://github.com/wandergis/leaflet-echarts  修改的，使用 AI编程工具 TRAE Work CN 实现的，如有侵权，联系我删除。
