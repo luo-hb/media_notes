@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cesium WebGL1.0 -> WebGL 2.0</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+
+  :root{
+    --bg:#0a0e1a;
+    --left-bg:rgba(255,107,53,.06);
+    --left-border:rgba(255,107,53,.22);
+    --left-label:#ff6b35;
+    --right-bg:rgba(52,211,153,.06);
+    --right-border:rgba(52,211,153,.22);
+    --right-label:#34d399;
+    --arrow:#7c6ff0;
+    --kw:#c678dd;
+    --type:#56b6c2;
+    --builtin:#e5c07b;
+    --var:#98c379;
+    --num:#d19a66;
+    --punct:#abb2bf;
+    --comment:#7f848e;
+    --text:#d7dbe0;
+  }
+
+  html,body{height:100%;overflow:hidden}
+
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+    cursor:pointer;
+    user-select:none;
+  }
+
+  #bg{
+    position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;
+  }
+
+  .container{
+    position:relative;z-index:1;
+    height:100vh;
+    display:flex;flex-direction:column;
+    justify-content:center;align-items:center;
+    padding:30px 40px;
+  }
+
+  .main-title{
+    font-size:32px;font-weight:700;
+    background:linear-gradient(135deg,#7c6ff0,#b76cf0);
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+    background-clip:text;
+    margin-bottom:36px;
+    letter-spacing:1px;
+    opacity:0;transform:translateY(-20px);
+    transition:all .6s ease;
+  }
+  .main-title.show{opacity:1;transform:translateY(0)}
+
+  .headers{
+    display:flex;align-items:center;justify-content:center;
+    gap:30px;width:min(960px,92%);
+    margin-bottom:18px;
+  }
+  .header{
+    flex:1;max-width:380px;text-align:center;
+    font-size:13px;font-weight:600;
+    text-transform:uppercase;letter-spacing:3px;
+    opacity:0;transition:opacity .5s ease;
+  }
+  .header.show{opacity:.55}
+  .header-left{color:var(--left-label)}
+  .header-right{color:var(--right-label)}
+  .header-arrow{flex:0 0 50px}
+
+  .rows{
+    display:flex;flex-direction:column;
+    gap:14px;width:min(960px,92%);
+  }
+
+  .row{
+    display:flex;align-items:center;justify-content:center;
+    gap:20px;min-height:58px;
+  }
+
+  /* ---------- code blocks ---------- */
+  .code{
+    flex:1;max-width:380px;
+    font-family:'Cascadia Code','Fira Code','Consolas','Monaco',monospace;
+    font-size:15px;line-height:1.6;
+    padding:10px 18px;border-radius:10px;
+    text-align:left; /* 修改：代码内部文字靠左 */
+    white-space:pre;
+    opacity:0;
+    transition:opacity .55s cubic-bezier(.22,1,.36,1),
+                transform .55s cubic-bezier(.22,1,.36,1),
+                box-shadow .55s ease;
+    position:relative;
+  }
+
+  .code-left{
+    background:var(--left-bg);
+    border:1px solid var(--left-border);
+    transform:translateX(-60px);
+  }
+  .code-left.show{
+    opacity:1;transform:translateX(0);
+    box-shadow:0 0 24px rgba(255,107,53,.08);
+  }
+
+  .code-right{
+    background:var(--right-bg);
+    border:1px solid var(--right-border);
+    transform:translateX(60px);
+    transition-delay:.15s;
+  }
+  .code-right.show{
+    opacity:1;transform:translateX(0);
+    box-shadow:0 0 24px rgba(52,211,153,.08);
+  }
+
+  /* row tag */
+  .tag{
+    position:absolute;top:-9px;left:50%;
+    transform:translateX(-50%);
+    font-size:10px;font-weight:600;
+    padding:1px 10px;border-radius:20px;
+    white-space:nowrap;letter-spacing:1px;
+    font-family:'Segoe UI',sans-serif;
+  }
+  .code-left .tag{
+    background:var(--bg);color:var(--left-label);
+    border:1px solid var(--left-border);
+  }
+  .code-right .tag{
+    background:var(--bg);color:var(--right-label);
+    border:1px solid var(--right-border);
+  }
+
+  /* ---------- arrow ---------- */
+  .arrow-wrap{
+    flex:0 0 50px;display:flex;
+    align-items:center;justify-content:center;
+  }
+  .arrow{
+    font-size:22px;color:var(--arrow);
+    opacity:0;transform:scale(.3);
+    transition:opacity .4s ease .25s,transform .4s cubic-bezier(.34,1.56,.64,1) .25s;
+  }
+  .arrow.show{opacity:.8;transform:scale(1)}
+
+  /* ---------- title row (row 0) ---------- */
+  .badge{
+    flex:1;max-width:380px;
+    text-align:center;padding:10px 18px;border-radius:10px;
+    font-weight:700;font-size:20px;letter-spacing:1px;
+    opacity:0;
+    transition:opacity .55s cubic-bezier(.22,1,.36,1),
+                transform .55s cubic-bezier(.22,1,.36,1),
+                box-shadow .55s ease;
+  }
+  .badge-left{
+    background:var(--left-bg);border:1px solid var(--left-border);
+    color:var(--left-label);transform:translateX(-60px);
+  }
+  .badge-left.show{opacity:1;transform:translateX(0);box-shadow:0 0 24px rgba(255,107,53,.1)}
+  .badge-right{
+    background:var(--right-bg);border:1px solid var(--right-border);
+    color:var(--right-label);transform:translateX(60px);
+    transition-delay:.15s;
+  }
+  .badge-right.show{opacity:1;transform:translateX(0);box-shadow:0 0 24px rgba(52,211,153,.1)}
+
+  /* ---------- syntax ---------- */
+  .kw{color:var(--kw)}
+  .type{color:var(--type)}
+  .builtin{color:var(--builtin)}
+  .var{color:var(--var)}
+  .num{color:var(--num)}
+  .punct{color:var(--punct)}
+  .comment{color:var(--comment);font-style:italic}
+
+  /* ---------- progress ---------- */
+  .progress{
+    position:fixed;bottom:26px;left:50%;
+    transform:translateX(-50%);
+    display:flex;gap:8px;z-index:2;
+  }
+  .dot{
+    width:8px;height:8px;border-radius:50%;
+    background:rgba(255,255,255,.12);
+    transition:all .35s ease;
+  }
+  .dot.active{background:var(--arrow);box-shadow:0 0 8px rgba(124,111,240,.5);transform:scale(1.3)}
+  .dot.done{background:rgba(124,111,240,.4)}
+
+  .hint{
+    position:fixed;bottom:50px;left:50%;
+    transform:translateX(-50%);
+    font-size:13px;color:rgba(255,255,255,.22);
+    z-index:2;transition:opacity .3s;
+    pointer-events:none;
+  }
+  .hint.pulse{animation:pulse 2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.2}50%{opacity:.5}}
+
+  .restart{
+    position:fixed;top:20px;right:24px;
+    padding:6px 16px;border-radius:20px;
+    background:rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.1);
+    color:rgba(255,255,255,.4);font-size:12px;
+    cursor:pointer;z-index:3;
+    transition:all .3s;
+    font-family:inherit;
+  }
+  .restart:hover{background:rgba(255,255,255,.1);color:rgba(255,255,255,.7)}
+
+  .step-counter{
+    position:fixed;top:24px;left:24px;
+    font-size:13px;color:rgba(255,255,255,.2);
+    z-index:2;font-family:monospace;
+  }
+
+  @media(max-width:700px){
+    .code{font-size:12px;padding:8px 12px}
+    .badge{font-size:16px}
+    .main-title{font-size:24px}
+    .row{gap:8px}
+    .arrow-wrap{flex:0 0 30px}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="bg"></canvas>
+
+<div class="step-counter" id="stepCounter">0 / 8</div>
+<button class="restart" id="restartBtn">重新开始</button>
+
+<div class="container">
+  <h1 class="main-title" id="mainTitle">Cesium WebGL1.0 &rarr; WebGL 2.0 迁移指南</h1>
+
+  <div class="headers">
+    <div class="header header-left" id="hdrL">WebGL 1.0</div>
+    <div class="header header-arrow"></div>
+    <div class="header header-right" id="hdrR">WebGL 2.0</div>
+  </div>
+
+  <div class="rows">
+    <!-- Row 0: WebGL -> WebGL 2.0 -->
+    <div class="row">
+      <div class="badge badge-left" data-step="0">
+        WebGL1.0
+      </div>
+      <div class="arrow-wrap"><span class="arrow" data-step="1">&#10142;</span></div>
+      <div class="badge badge-right" data-step="1">
+        WebGL 2.0
+      </div>
+    </div>
+
+    <!-- Row 1: attribute -> in -->
+    <div class="row">
+      <div class="code code-left" data-step="2">
+<span class="tag">顶点着色器</span><span class="kw">attribute</span> <span class="type">vec3</span> <span class="var">position</span><span class="punct">;</span>
+      </div>
+      <div class="arrow-wrap"><span class="arrow" data-step="3">&#10142;</span></div>
+      <div class="code code-right" data-step="3">
+<span class="tag">顶点着色器</span><span class="kw">in</span> <span class="type">vec3</span> <span class="var">position</span><span class="punct">;</span>
+      </div>
+    </div>
+
+    <!-- Row 2: gl_FragColor -> out_FragColor -->
+    <div class="row">
+      <div class="code code-left" data-step="4">
+<span class="tag">片元着色器</span><span class="builtin">gl_FragColor</span> <span class="punct">=</span> <span class="type">vec4</span><span class="punct">(</span><span class="var">u_color</span><span class="punct">,</span> <span class="num">1.0</span><span class="punct">);</span>
+      </div>
+      <div class="arrow-wrap"><span class="arrow" data-step="5">&#10142;</span></div>
+      <div class="code code-right" data-step="5">
+<span class="tag">片元着色器</span><span class="var">out_FragColor</span> <span class="punct">=</span> <span class="type">vec4</span><span class="punct">(</span><span class="var">u_color</span><span class="punct">,</span> <span class="num">1.0</span><span class="punct">);</span>
+      </div>
+    </div>
+
+    <!-- Row 3: isDestroyed -->
+    <div class="row">
+      <div class="code code-left" data-step="6">
+<span class="tag">JavaScript</span><span class="comment">// isDestroyed() 未实现</span>
+      </div>
+      <div class="arrow-wrap"><span class="arrow" data-step="7">&#10142;</span></div>
+      <div class="code code-right" data-step="7">
+<span class="tag">JavaScript</span><span class="kw">isDestroyed</span><span class="punct">() {</span>
+<span class="kw">    return</span> <span class="num">false</span><span class="punct">;</span>
+<span class="punct">}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="hint pulse" id="hint">点击屏幕继续</div>
+
+<div class="progress" id="progress"></div>
+
+<script>
+(function(){
+  /* ============ particle background ============ */
+  const canvas=document.getElementById('bg');
+  const ctx=canvas.getContext('2d');
+  let W,H,particles=[];
+  const N=60;
+
+  function resize(){
+    W=canvas.width=window.innerWidth;
+    H=canvas.height=window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize',resize);
+
+  for(let i=0;i<N;i++){
+    particles.push({
+      x:Math.random()*W,
+      y:Math.random()*H,
+      vx:(Math.random()-.5)*.25,
+      vy:(Math.random()-.5)*.25,
+      r:Math.random()*1.5+.5
+    });
+  }
+
+  function drawBg(){
+    ctx.clearRect(0,0,W,H);
+    // dots
+    for(const p of particles){
+      p.x+=p.vx;p.y+=p.vy;
+      if(p.x<0||p.x>W)p.vx*=-1;
+      if(p.y<0||p.y>H)p.vy*=-1;
+      ctx.beginPath();
+      ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+      ctx.fillStyle='rgba(124,111,240,.25)';
+      ctx.fill();
+    }
+    // lines
+    for(let i=0;i<particles.length;i++){
+      for(let j=i+1;j<particles.length;j++){
+        const dx=particles[i].x-particles[j].x;
+        const dy=particles[i].y-particles[j].y;
+        const d=Math.sqrt(dx*dx+dy*dy);
+        if(d<120){
+          ctx.beginPath();
+          ctx.moveTo(particles[i].x,particles[i].y);
+          ctx.lineTo(particles[j].x,particles[j].y);
+          ctx.strokeStyle='rgba(124,111,240,'+(.08*(1-d/120))+')';
+          ctx.lineWidth=.5;
+          ctx.stroke();
+        }
+      }
+    }
+    requestAnimationFrame(drawBg);
+  }
+  drawBg();
+
+  /* ============ progressive reveal ============ */
+  const totalSteps=8;
+  let step=0;
+
+  // build progress dots
+  const prog=document.getElementById('progress');
+  for(let i=0;i<totalSteps;i++){
+    const d=document.createElement('div');
+    d.className='dot';
+    prog.appendChild(d);
+  }
+  const dots=prog.querySelectorAll('.dot');
+  const hint=document.getElementById('hint');
+  const counter=document.getElementById('stepCounter');
+
+  // title + headers always show
+  document.getElementById('mainTitle').classList.add('show');
+  document.getElementById('hdrL').classList.add('show');
+  document.getElementById('hdrR').classList.add('show');
+
+  function updateCounter(){
+    counter.textContent=(step)+' / '+totalSteps;
+  }
+
+  function advance(){
+    if(step>=totalSteps){
+      hint.textContent='全部展示完成  |  按 R 重新开始';
+      hint.classList.remove('pulse');
+      return;
+    }
+    // reveal all elements with data-step == step
+    document.querySelectorAll('[data-step="'+step+'"]').forEach(function(el){
+      el.classList.add('show');
+    });
+    // update dots
+    if(step>0)dots[step-1].classList.add('done');
+    dots[step].classList.add('active');
+    step++;
+    updateCounter();
+
+    if(step===1){
+      hint.textContent='继续点击，逐行展示代码变化';
+    }else if(step<totalSteps){
+      hint.textContent='点击屏幕继续';
+      hint.classList.add('pulse');
+    }else{
+      hint.textContent='全部展示完成  |  按 R 重新开始';
+      hint.classList.remove('pulse');
+      dots[totalSteps-1].classList.remove('active');
+      dots[totalSteps-1].classList.add('done');
+      counter.textContent=totalSteps+' / '+totalSteps;
+    }
+  }
+
+  function reset(){
+    step=0;
+    document.querySelectorAll('.show').forEach(function(el){
+      if(el.id!=='mainTitle'&&el.id!=='hdrL'&&el.id!=='hdrR'){
+        el.classList.remove('show');
+      }
+    });
+    dots.forEach(function(d){
+      d.classList.remove('active');
+      d.classList.remove('done');
+    });
+    hint.textContent='点击屏幕继续';
+    hint.classList.add('pulse');
+    updateCounter();
+  }
+
+  document.body.addEventListener('click',function(e){
+    if(e.target.id==='restartBtn')return;
+    advance();
+  });
+
+  document.getElementById('restartBtn').addEventListener('click',function(e){
+    e.stopPropagation();
+    reset();
+  });
+
+  document.addEventListener('keydown',function(e){
+    if(e.key===' '||e.key==='ArrowRight'||e.key==='Enter'){
+      e.preventDefault();
+      advance();
+    }else if(e.key==='r'||e.key==='R'){
+      reset();
+    }
+  });
+
+  updateCounter();
+})();
+</script>
+</body>
+</html>
