@@ -21,6 +21,8 @@
     <script src="https://unpkg.com/leaflet@1.0.1/dist/leaflet.js"></script>
  
     <script>
+      // 北斗网格位置码Leaflet绘制实现  https://blog.csdn.net/this_is_id/article/details/154950389
+      // LeaFlet学习之GridLayer扩展   https://blog.csdn.net/weixin_40184249/article/details/81173064
         var map = new L.Map('map', { center: [39.92,116.46], zoom: 10 ,CRS:L.CRS.EPSG4326});
  
         var tiles = new L.GridLayer();
