@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>WebGL2 极坐标UV圆形 - 扇形三角形贴图</title>
+<style>
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  body {
+    margin: 0;
+    padding: 32px;
+    font-family: "Microsoft Yahei", system-ui, sans-serif;
+    background: linear-gradient(135deg, #0f141e 0%, #1a2130 100%);
+    color: #e8edf7;
+    min-height: 100vh;
+  }
+  .page-title{
+    font-size:26px;
+    font-weight:600;
+    color:#c1d8ff;
+    margin-bottom:24px;
+    letter-spacing:1px;
+  }
+  .panel-control {
+    background: rgba(32, 38, 52, 0.85);
+    backdrop-filter: blur(10px);
+    padding: 20px 24px;
+    border-radius: 14px;
+    border: 1px solid rgba(70, 80, 105, 0.4);
+    margin-bottom: 24px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.38);
+  }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap:18px;
+    align-items:center;
+    margin-bottom:14px;
+  }
+  .row:last-child{
+    margin-bottom:0;
+  }
+  .slider-item{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  .slider-item label{
+    font-size:14px;
+    color:#cad3e5;
+    width:90px;
+  }
+  .slider-item input[type="range"]{
+    width:160px;
+  }
+  .slider-item .val-text{
+    width:50px;
+    font-family:monospace;
+    color:#7dd8ff;
+  }
+  .check-item{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    color:#cad3e5;
+    font-size:14px;
+  }
+  button, label.file-btn {
+    padding:8px 14px;
+    cursor: pointer;
+    background: linear-gradient(135deg,#364056,#2c3548);
+    color: #e8edf7;
+    border: 1px solid rgba(90, 105, 135, 0.5);
+    border-radius:8px;
+    font-size:14px;
+    transition: 0.2s ease;
+  }
+  button:hover, label.file-btn:hover {
+    background: linear-gradient(135deg,#475472,#39445c);
+    transform: translateY(-1px);
+    box-shadow:0 4px 10px rgba(0,0,0,0.25);
+  }
+  button:active, label.file-btn:active{
+    transform: translateY(0px);
+  }
+  #fileInput { display: none; }
+  .info-text{
+    color:#7dd8ff;
+    font-size:14px;
+    margin-left:12px;
+    font-family:monospace;
+  }
+  .main-wrap{
+    display:flex;
+    gap:28px;
+    align-items:flex-start;
+  }
+  canvas {
+    border: 1px solid rgba(70, 80, 105, 0.4);
+    background: #05070b;
+    border-radius:14px;
+    box-shadow:0 0 22px rgba(100,160,255,0.12), 0 6px 20px rgba(0,0,0,0.45);
+  }
+  .preview-box{
+    background: rgba(32, 38, 52, 0.85);
+    backdrop-filter: blur(10px);
+    padding:18px;
+    border-radius:14px;
+    border:1px solid rgba(70, 80, 105, 0.4);
+    box-shadow:0 8px 24px rgba(0,0,0,0.38);
+  }
+  .preview-box .title{
+    font-size:16px;
+    color:#b2ccff;
+    margin-bottom:14px;
+    font-weight:500;
+  }
+  #previewImg {
+    border: 1px solid rgba(80,90,115,0.5);
+    width:300px;
+    height:300px;
+    object-fit: contain;
+    background: #11151f;
+    border-radius:10px;
+  }
+</style>
+</head>
+<body>
+<h2 class="page-title">WebGL2 极坐标UV圆形 - 扇形三角形贴图</h2>
+<div class="panel-control">
+  <div class="row">
+    <div class="slider-item">
+      <label>三角形数量</label>
+      <input id="inpSeg" type="range" min="3" max="200" value="40">
+      <span class="val-text" id="segVal">40</span>
+    </div>
+    <div class="slider-item">
+      <label>半径</label>
+      <input id="inpRadius" type="range" min="20" max="140" value="80">
+      <span class="val-text" id="radiusVal">0.80</span>
+    </div>
+    <div class="slider-item">
+      <label>旋转角度(°)</label>
+      <input id="inpStartAngle" type="range" min="0" max="360" value="90">
+      <span class="val-text" id="angleVal">90</span>
+    </div>
+    <div class="check-item">
+      <input type="checkbox" id="chkWire" checked>
+      <label for="chkWire">显示三角形边框</label>
+    </div>
+    <button id="btnRefreshImg">刷新图片</button>
+    <label class="file-btn" for="fileInput">上传本地图片</label>
+    <input type="file" id="fileInput" accept="image/*" />
+    <span class="info-text" id="info"></span>
+  </div>
+  <div class="row">
+    <span style="color:#a0c4ff; font-weight:500;">UV变换：</span>
+    <button id="btnSwap">宽高互换</button>
+    <button id="btnFlipX">X轴反转</button>
+    <button id="btnFlipY">Y轴反转</button>
+    <button id="btnResetUV">重置UV</button>
+  </div>
+</div>
+<div class="main-wrap">
+  <canvas id="glcanvas" width="600" height="600"></canvas>
+  <div class="preview-box">
+    <div class="title">原图预览</div>
+    <img id="previewImg" />
+  </div>
+</div>
+<script>
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+if (!gl) throw new Error('不支持 WebGL2');
+let segCount = 40;
+let radius = 0.8;
+let rotateDeg = 90; // 整体网格旋转角度
+let showWire = true; // 新增：是否显示边框
+let currentImage = null;
+// UV 变换状态
+let uvSwap = false;
+let uvFlipX = false;
+let uvFlipY = false;
+const sampleImages = [
+  'https://picsum.photos/id/1015/512/512',
+  'https://picsum.photos/id/1025/512/512',
+  'https://picsum.photos/id/1043/512/512',
+  'https://picsum.photos/id/1062/512/512',
+  'https://picsum.photos/id/1074/512/512'
+];
+let sampleIndex = 0;
+// ---------- 着色器 ----------
+const vsSource = `#version 300 es
+  precision highp float;
+  in vec2 aPos;
+  in vec2 aPolarUV;
+  out vec2 vPolarUV;
+  void main(){
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    vPolarUV = aPolarUV;
+  }
+`;
+const fsSource = `#version 300 es
+  precision highp float;
+  in vec2 vPolarUV;
+  uniform sampler2D uTex;
+  uniform bool uSwap;
+  uniform bool uFlipX;
+  uniform bool uFlipY;
+  out vec4 fragColor;
+  void main(){
+    float theta = vPolarUV.x;
+    float r = vPolarUV.y;
+    float u = theta / (2.0 * 3.1415926535);
+    float v = r;
+    if (uSwap) {
+      float t = u;
+      u = v;
+      v = t;
+    }
+    if (uFlipX) u = 1.0 - u;
+    if (uFlipY) v = 1.0 - v;
+    fragColor = texture(uTex, vec2(u, v));
+  }
+`;
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    gl.deleteShader(s);
+  }
+  return s;
+}
+const program = gl.createProgram();
+gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vsSource));
+gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fsSource));
+gl.linkProgram(program);
+gl.useProgram(program);
+const aPosLoc = gl.getAttribLocation(program, 'aPos');
+const aPolarUVLoc = gl.getAttribLocation(program, 'aPolarUV');
+const uTexLoc = gl.getUniformLocation(program, 'uTex');
+const uSwapLoc = gl.getUniformLocation(program, 'uSwap');
+const uFlipXLoc = gl.getUniformLocation(program, 'uFlipX');
+const uFlipYLoc = gl.getUniformLocation(program, 'uFlipY');
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+
+// ========== 构建几何体 ==========
+function buildGeometry() {
+  const verts = [];
+  const rotRad = rotateDeg * Math.PI / 180;
+  for (let i = 0; i < segCount; i++) {
+    // uv用原始角度（不带旋转偏移，贴图不动）
+    const theta0 = (i / segCount) * Math.PI * 2;
+    const theta1 = ((i + 1) / segCount) * Math.PI * 2;
+
+    // 顶点坐标增加旋转偏移（网格旋转）
+    const a0 = theta0 + rotRad;
+    const a1 = theta1 + rotRad;
+
+    const x0 = Math.cos(a0) * radius;
+    const y0 = Math.sin(a0) * radius;
+    const x1 = Math.cos(a1) * radius;
+    const y1 = Math.sin(a1) * radius;
+
+    // aPolarUV.x 填入原始theta0、theta1，不叠加旋转
+    verts.push(0, 0, theta0, 0.0);
+    verts.push(x0, y0, theta0, 1.0);
+    verts.push(x1, y1, theta1, 1.0);
+  }
+  return new Float32Array(verts);
+}
+function buildWireframe() {
+  const lines = [];
+  const rotRad = rotateDeg * Math.PI / 180;
+  for (let i = 0; i < segCount; i++) {
+    const theta0 = (i / segCount) * Math.PI * 2;
+    const theta1 = ((i + 1) / segCount) * Math.PI * 2;
+    const a0 = theta0 + rotRad;
+    const a1 = theta1 + rotRad;
+    const x0 = Math.cos(a0) * radius;
+    const y0 = Math.sin(a0) * radius;
+    const x1 = Math.cos(a1) * radius;
+    const y1 = Math.sin(a1) * radius;
+    lines.push(0, 0, x0, y0);
+    lines.push(0, 0, x1, y1);
+    lines.push(x0, y0, x1, y1);
+  }
+  return new Float32Array(lines);
+}
+const wireVbo = gl.createBuffer();
+// ---------- 纹理 ----------
+function createTextureFromImage(img) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
+}
+function loadImageTexture(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+async function loadSampleImage() {
+  try {
+    const img = await loadImageTexture(sampleImages[sampleIndex]);
+    currentImage = img;
+    document.getElementById('previewImg').src = img.src;
+    render();
+  } catch (e) {
+    console.error('图片加载失败', e);
+  }
+}
+// ---------- 渲染 ----------
+function drawFilledTriangles() {
+  const vertData = buildGeometry();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, vertData, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(aPosLoc);
+  gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(aPolarUVLoc);
+  gl.vertexAttribPointer(aPolarUVLoc, 2, gl.FLOAT, false, 16, 8);
+  if (currentImage) {
+    const tex = createTextureFromImage(currentImage);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(uTexLoc, 0);
+  }
+  gl.uniform1i(uSwapLoc, uvSwap ? 1 : 0);
+  gl.uniform1i(uFlipXLoc, uvFlipX ? 1 : 0);
+  gl.uniform1i(uFlipYLoc, uvFlipY ? 1 : 0);
+  gl.drawArrays(gl.TRIANGLES, 0, segCount * 3);
+}
+function drawWireframe() {
+  // 勾选框控制：不显示则直接return
+  if(!showWire) return;
+
+  const wireVS = `#version 300 es
+    precision highp float;
+    in vec2 aPos;
+    void main(){
+      gl_Position = vec4(aPos, 0.0, 1.0);
+    }
+  `;
+  const wireFS = `#version 300 es
+    precision highp float;
+    out vec4 fragColor;
+    uniform vec4 uColor;
+    void main(){
+      fragColor = uColor;
+    }
+  `;
+  if (!drawWireframe.program) {
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, wireVS);
+    gl.compileShader(vs);
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, wireFS);
+    gl.compileShader(fs);
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    drawWireframe.program = prog;
+    drawWireframe.aPos = gl.getAttribLocation(prog, 'aPos');
+    drawWireframe.uColor = gl.getUniformLocation(prog, 'uColor');
+  }
+  gl.useProgram(drawWireframe.program);
+  const lineData = buildWireframe();
+  gl.bindBuffer(gl.ARRAY_BUFFER, wireVbo);
+  gl.bufferData(gl.ARRAY_BUFFER, lineData, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(drawWireframe.aPos);
+  gl.vertexAttribPointer(drawWireframe.aPos, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform4f(drawWireframe.uColor, 0.15, 0.95, 0.95, 0.85);
+  gl.drawArrays(gl.LINES, 0, lineData.length / 2);
+  gl.useProgram(program);
+}
+function render() {
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.05, 0.05, 0.08, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  drawFilledTriangles();
+  drawWireframe();
+  document.getElementById('info').textContent =
+    `三角形: ${segCount} | 半径: ${radius.toFixed(2)} | 网格旋转:${rotateDeg}° | ` +
+    `边框:${showWire?"开":"关"} | UV交换:${uvSwap} X反转:${uvFlipX} Y反转:${uvFlipY}`;
+}
+// ---------- 滑块&勾选框实时更新 ----------
+const inpSeg = document.getElementById('inpSeg');
+const inpRadius = document.getElementById('inpRadius');
+const inpStartAngle = document.getElementById('inpStartAngle');
+const chkWire = document.getElementById('chkWire');
+const segVal = document.getElementById('segVal');
+const radiusVal = document.getElementById('radiusVal');
+const angleVal = document.getElementById('angleVal');
+
+function updateFromSlider(){
+  segCount = parseInt(inpSeg.value);
+  radius = parseInt(inpRadius.value) / 100.0;
+  rotateDeg = parseInt(inpStartAngle.value);
+  showWire = chkWire.checked;
+
+  segVal.textContent = segCount;
+  radiusVal.textContent = radius.toFixed(2);
+  angleVal.textContent = rotateDeg;
+  render();
+}
+inpSeg.addEventListener('input', updateFromSlider);
+inpRadius.addEventListener('input', updateFromSlider);
+inpStartAngle.addEventListener('input', updateFromSlider);
+chkWire.addEventListener('input', updateFromSlider);
+
+// ---------- 其余按钮事件 ----------
+document.getElementById('btnRefreshImg').onclick = () => {
+  sampleIndex = (sampleIndex + 1) % sampleImages.length;
+  loadSampleImage();
+};
+document.getElementById('fileInput').onchange = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      currentImage = img;
+      document.getElementById('previewImg').src = img.src;
+      render();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+};
+document.getElementById('btnSwap').onclick = () => {
+  uvSwap = !uvSwap;
+  render();
+};
+document.getElementById('btnFlipX').onclick = () => {
+  uvFlipX = !uvFlipX;
+  render();
+};
+document.getElementById('btnFlipY').onclick = () => {
+  uvFlipY = !uvFlipY;
+  render();
+};
+document.getElementById('btnResetUV').onclick = () => {
+  uvSwap = false;
+  uvFlipX = false;
+  uvFlipY = false;
+};
+// ---------- 启动 ----------
+loadSampleImage();
+updateFromSlider();
+</script>
+</body>
+</html>

@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Leaflet WebGL2 3×3网格扭曲贴图｜米字形8三角【修复版】</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: Arial, sans-serif;
+      }
+      #map {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 100%;
+      }
+      #debug {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        background: #fff;
+        padding: 6px;
+        z-index: 9999;
+        font-size: 12px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        pointer-events: none;
+      }
+      #panel {
+        position: fixed;
+        top: 56px;
+        left: 8px;
+        width: 360px;
+        max-height: calc(100vh - 72px);
+        overflow: auto;
+        background: rgba(255, 255, 255, 0.96);
+        z-index: 9998;
+        border: 1px solid #cfcfcf;
+        border-radius: 6px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+        padding: 10px;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      #panel h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      #panel .section {
+        margin-bottom: 12px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #e8e8e8;
+      }
+      #panel .section:last-child {
+        margin-bottom: 0;
+        padding-bottom: 0;
+        border-bottom: none;
+      }
+      #panel .btn-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 6px 0 8px;
+      }
+      #panel button {
+        border: 1px solid #999;
+        background: #f6f6f6;
+        border-radius: 4px;
+        padding: 5px 8px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      #panel button.active {
+        background: #d9ecff;
+        border-color: #4d9cff;
+        color: #0b5fcc;
+      }
+      #panel textarea {
+        width: 100%;
+        box-sizing: border-box;
+        resize: vertical;
+        font-family: Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        border: 1px solid #bbb;
+        border-radius: 4px;
+        padding: 6px;
+      }
+      #panel input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #bbb;
+        border-radius: 4px;
+        padding: 6px;
+        font-size: 12px;
+      }
+      #panel .hint {
+        color: #666;
+        margin-top: 4px;
+      }
+      #panel .status {
+        margin-top: 4px;
+        color: #333;
+      }
+      #panel .label {
+        display: block;
+        margin: 6px 0 4px;
+        color: #444;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="debug">初始化</div>
+    <div id="panel">
+      <div class="section">
+        <h3>九个控制点</h3>
+        <div class="btn-row">
+          <button id="btnLoadNinePoints" type="button">读取当前九点</button>
+          <button id="btnApplyNinePoints" type="button">应用九点坐标</button>
+          <button id="btnPrintNinePoints" type="button">打印九点坐标</button>
+        </div>
+        <textarea id="pointsInput" rows="12"></textarea>
+        <div class="hint">
+          格式为 JSON 数组，固定顺序：0左下 1左上 2右上 3右下 4左中 5上中 6右中
+          7下中 8中心。
+        </div>
+        <div id="pointsStatus" class="status">等待操作</div>
+      </div>
+      <div class="section">
+        <h3>地图打点</h3>
+        <div class="btn-row">
+          <button id="btnToggleCapture" type="button">开始打点</button>
+          <button id="btnClearCapture" type="button">清空打点</button>
+          <button id="btnExportGeoJSON" type="button">导出 GeoJSON</button>
+        </div>
+        <div class="btn-row">
+          <button id="btnApplyCaptureName" type="button">设置点名</button>
+            <button id="btnPromptCaptureName" type="button">弹窗点名</button>
+          <button id="btnDeleteCapturePoint" type="button">删除选中点</button>
+        </div>
+        <label class="label" for="captureNameInput">选中点名称</label>
+        <input
+          id="captureNameInput"
+          type="text"
+          placeholder="先点击地图上的某个打点，再设置名称"
+        />
+        <textarea id="captureOutput" rows="8" readonly></textarea>
+        <div class="hint">
+          普通打点支持：点击地图新增、拖拽改经纬度、点击点选中、设置名称、删除选中点。
+        </div>
+        <div id="captureStatus" class="status">当前未开启打点模式</div>
+      </div>
+    </div>
+    <div id="map"></div>
+    <script>
+      const debugDom = document.getElementById("debug");
+      const panelDom = document.getElementById("panel");
+      const pointsInput = document.getElementById("pointsInput");
+      const captureOutput = document.getElementById("captureOutput");
+      const pointsStatus = document.getElementById("pointsStatus");
+      const captureStatus = document.getElementById("captureStatus");
+      const btnLoadNinePoints = document.getElementById("btnLoadNinePoints");
+      const btnApplyNinePoints = document.getElementById("btnApplyNinePoints");
+      const btnPrintNinePoints = document.getElementById("btnPrintNinePoints");
+      const btnToggleCapture = document.getElementById("btnToggleCapture");
+      const btnClearCapture = document.getElementById("btnClearCapture");
+      const btnExportGeoJSON = document.getElementById("btnExportGeoJSON");
+      const btnApplyCaptureName = document.getElementById(
+        "btnApplyCaptureName",
+      );
+      const btnPromptCaptureName = document.getElementById(
+        "btnPromptCaptureName",
+      );
+      const btnDeleteCapturePoint = document.getElementById(
+        "btnDeleteCapturePoint",
+      );
+      const captureNameInput = document.getElementById("captureNameInput");
+
+      // ===================== 米字形8个三角形索引 =====================
+      const TRIANGLES_INDEX = [
+        [0, 4, 8],
+        [4, 1, 8],
+        [1, 5, 8],
+        [5, 2, 8],
+        [2, 6, 8],
+        [6, 3, 8],
+        [3, 7, 8],
+        [7, 0, 8],
+      ];
+
+      // ===== Leaflet WebGL 3×3网格扭曲图层 =====
+      L.WarpTextureLayer = L.Layer.extend({
+        initialize: function (imgUrl, points, options) {
+          L.setOptions(this, options);
+          this._imgUrl = imgUrl;
+          this._ctrlPoints = [...points];
+          this._canvas = null;
+          this._gl = null;
+          this._program = null;
+          this._vbo = null;
+          this._texture = null;
+          this._loadedTexture = false;
+          this._drawTimeout = null;
+          this._onControlUpdate = null;
+          this._img = new Image();
+          this._img.crossOrigin = "anonymous";
+          this._img.src = this._imgUrl;
+          this._img.onload = () => {
+            this._loadedTexture = true;
+            debugDom.innerText = "✅ 纹理图片加载完成";
+            if (this._map) this._reset();
+          };
+          this._img.onerror = () => {
+            debugDom.innerText = "❌ 图片加载失败，请检查路径或CORS";
+          };
+        },
+        setControlPoints: function (latlng9Arr) {
+          this._ctrlPoints = [...latlng9Arr];
+          this._throttleDraw();
+          if (this._onControlUpdate) this._onControlUpdate(this._ctrlPoints);
+        },
+        onAdd: function (map) {
+          this._map = map;
+          if (!this._canvas) this._initCanvas();
+          map.getPanes().overlayPane.appendChild(this._canvas);
+          map.on("moveend resize zoomend", this._reset, this);
+          map.on("move zoom", this._throttleDraw, this);
+          this._reset();
+        },
+        onRemove: function (map) {
+          map.getPanes().overlayPane.removeChild(this._canvas);
+          map.off("moveend resize zoomend", this._reset, this);
+          map.off("move zoom", this._throttleDraw, this);
+          const gl = this._gl;
+          if (gl) {
+            if (this._program) gl.deleteProgram(this._program);
+            if (this._vbo) gl.deleteBuffer(this._vbo);
+            if (this._texture) gl.deleteTexture(this._texture);
+          }
+          this._program = null;
+          this._canvas = null;
+          this._gl = null;
+        },
+        addTo: function (map) {
+          map.addLayer(this);
+          return this;
+        },
+        _initCanvas: function () {
+          this._canvas = L.DomUtil.create(
+            "canvas",
+            "leaflet-layer leaflet-zoom-hide",
+          );
+          this._gl = this._canvas.getContext("webgl2", {
+            preserveDrawingBuffer: true,
+            alpha: true,
+          });
+          if (!this._gl) {
+            debugDom.innerText = "❌ 浏览器不支持WebGL2";
+            return;
+          }
+          this._createGLProgram();
+          this._createBuffer();
+          this._createTexObject();
+        },
+        _createGLProgram: function () {
+          const gl = this._gl;
+          const vertSrc = `#version 300 es
+                layout(location=0) in vec2 aPos;
+                layout(location=1) in vec2 aUv;
+                uniform vec2 uCanvasSize;
+                out vec2 vUv;
+                void main(){
+                    vec2 ndc = (aPos / uCanvasSize) * 2.0 - 1.0;
+                    gl_Position = vec4(ndc,0.0,1.0);
+                    vUv = aUv;
+                }`;
+          const fragSrc = `#version 300 es
+                precision mediump float;
+                in vec2 vUv;
+                uniform sampler2D uTex;
+                uniform float uOpacity;
+                out vec4 fragColor;
+                void main(){
+                    vec4 col = texture(uTex, vUv);
+                    fragColor = vec4(col.rgb, col.a * uOpacity);
+                }`;
+          const compileShader = (type, src) => {
+            const s = gl.createShader(type);
+            gl.shaderSource(s, src);
+            gl.compileShader(s);
+            if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+              console.error("Shader Error:", gl.getShaderInfoLog(s));
+            }
+            return s;
+          };
+          const vShader = compileShader(gl.VERTEX_SHADER, vertSrc);
+          const fShader = compileShader(gl.FRAGMENT_SHADER, fragSrc);
+          const program = gl.createProgram();
+          gl.attachShader(program, vShader);
+          gl.attachShader(program, fShader);
+          gl.linkProgram(program);
+          if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error("Program link error:", gl.getProgramInfoLog(program));
+          }
+          this._program = program;
+          gl.useProgram(program);
+          this._locCanvasSize = gl.getUniformLocation(program, "uCanvasSize");
+          this._locOpacity = gl.getUniformLocation(program, "uOpacity");
+        },
+        _createBuffer: function () {
+          this._vbo = this._gl.createBuffer();
+        },
+        _createTexObject: function () {
+          const gl = this._gl;
+          this._texture = gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, this._texture);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        },
+        _resizeCanvas: function () {
+          const size = this._map.getSize();
+          this._canvas.width = size.x;
+          this._canvas.height = size.y;
+          this._gl.viewport(0, 0, size.x, size.y);
+        },
+        _reset: function () {
+          const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+          L.DomUtil.setPosition(this._canvas, topLeft);
+          this._resizeCanvas();
+          this._drawWarpQuad();
+        },
+        _throttleDraw: function () {
+          clearTimeout(this._drawTimeout);
+          this._drawTimeout = setTimeout(() => this._drawWarpQuad(), 16);
+        },
+        _drawWarpQuad: function () {
+          if (!this._gl || !this._program || !this._loadedTexture) return;
+          const gl = this._gl;
+          const map = this._map;
+          const canvasSize = map.getSize();
+          // 修复1：Canvas坐标(y向下) -> WebGL坐标(y向上)
+          const screenCtrl = this._ctrlPoints.map((ll) => {
+            const pt = map.latLngToContainerPoint(L.latLng(ll[0], ll[1]));
+            return [pt.x, canvasSize.y - pt.y];
+          });
+          // 修复2：统一UV上下方向，避免上/下控制点影响区域颠倒
+          const uv9 = [
+            [0.0, 1.0], //0 左下
+            [0.0, 0.0], //1 左上
+            [1.0, 0.0], //2 右上
+            [1.0, 1.0], //3 右下
+            [0.0, 0.5], //4 左中
+            [0.5, 0.0], //5 上中
+            [1.0, 0.5], //6 右中
+            [0.5, 1.0], //7 下中
+            [0.5, 0.5], //8 中心
+          ];
+          const vertexData = [];
+          for (const tri of TRIANGLES_INDEX) {
+            for (const idx of tri) {
+              const pos = screenCtrl[idx];
+              const uv = uv9[idx];
+              vertexData.push(pos[0], pos[1], uv[0], uv[1]);
+            }
+          }
+          const vertArray = new Float32Array(vertexData);
+          const vertexCount = TRIANGLES_INDEX.length * 3;
+          gl.bindBuffer(gl.ARRAY_BUFFER, this._vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, vertArray, gl.DYNAMIC_DRAW);
+          gl.enableVertexAttribArray(0);
+          gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+          gl.enableVertexAttribArray(1);
+          gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+          gl.uniform2f(this._locCanvasSize, canvasSize.x, canvasSize.y);
+          gl.uniform1f(this._locOpacity, this.options.opacity ?? 1.0);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, this._texture);
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            this._img,
+          );
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.disable(gl.CULL_FACE);
+          gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
+          debugDom.innerText = "✅ 米字形8三角渲染完成";
+        },
+        setOpacity: function (val) {
+          this.options.opacity = val;
+          this._throttleDraw();
+        },
+      });
+
+      L.warpTextureLayer = function (img, ninePoints, opts) {
+        return new L.WarpTextureLayer(img, ninePoints, opts);
+      };
+
+      // ===================== 地图初始化 =====================
+      const map = L.map("map", {
+        zoomSnap: 0.01,
+        zoomDelta: 0.01,
+      }).setView([25.19, 101.86], 7);
+
+      // 防止面板上的点击/滚轮/拖动事件影响到底图或打点逻辑
+      L.DomEvent.disableClickPropagation(panelDom);
+      L.DomEvent.disableScrollPropagation(panelDom);
+
+      // 天地图底图
+      const tk = "37d883978b54bc12f58d30492062d574";
+      L.tileLayer(
+        `http://t{s}.tianditu.gov.cn/vec_w/wmts?service=wmts&request=GetTile&version=1.0.0&LAYER=vec&tileMatrixSet=w&TileMatrix={z}&TileRow={y}&TileCol={x}&style=default&format=tiles&tk=${tk}`,
+        { subdomains: ["0", "1", "2", "3", "4", "5", "6", "7"] },
+      ).addTo(map);
+      L.tileLayer(
+        `http://t{s}.tianditu.gov.cn/cva_w/wmts?service=wmts&request=GetTile&version=1.0.0&LAYER=cva&tileMatrixSet=w&TileMatrix={z}&TileRow={y}&TileCol={x}&style=default&format=tiles&tk=${tk}`,
+        { subdomains: ["0", "1", "2", "3", "4", "5", "6", "7"] },
+      ).addTo(map);
+
+      const baseCorners = [
+        [21.08450008351735, 97.58056640625001], //0【蓝色-左下】
+        [29.235111793394957, 97.33088868480382], //1【红色-左上】
+        [29.21069996106651, 106.59138090835829], //2【绿色-右上】
+        [21.00247105435674, 106.41357421875001], //3【橙色-右下】
+      ];
+
+      function getMidPoint(pA, pB) {
+        return [(pA[0] + pB[0]) / 2, (pA[1] + pB[1]) / 2];
+      }
+
+      // 9点固定顺序
+      let ninePointss = [
+        baseCorners[0], //0 左下
+        baseCorners[1], //1 左上
+        baseCorners[2], //2 右上
+        baseCorners[3], //3 右下
+        getMidPoint(baseCorners[0], baseCorners[1]), //4 左中点
+        getMidPoint(baseCorners[1], baseCorners[2]), //5 上中点
+        getMidPoint(baseCorners[2], baseCorners[3]), //6 右中点
+        getMidPoint(baseCorners[3], baseCorners[0]), //7 下中点
+        getMidPoint(
+          getMidPoint(baseCorners[0], baseCorners[2]),
+          getMidPoint(baseCorners[1], baseCorners[3]),
+        ), //8 中心
+      ];
+
+      let ninePoints = [
+        [21.08450008351735, 97.58056640625001],
+        [29.235111793394957, 97.33088868480382],
+        [29.267232865200903, 106.66625976562501],
+        [21.166483858206583, 106.47949218750001],
+        [25.159805938456152, 97.45572754552691],
+        [29.219302076779456, 102.04101562500001],
+        [25.106585507711625, 106.50247756355415],
+        [21.12549763660629, 102.008056640625],
+        [25.13319572308389, 101.97910255454053],
+      ];
+
+      const markerConfig = [
+        { color: "blue", label: "0【蓝色-左下角】" },
+        { color: "red", label: "1【红色-左上角】" },
+        { color: "green", label: "2【绿色-右上角】" },
+        { color: "orange", label: "3【橙色-右下角】" },
+        { color: "#00cccc", label: "4【青色-左边中点】" },
+        { color: "#9933cc", label: "5【紫色-上边中点】" },
+        { color: "#ffdd00", label: "6【黄色-右边中点】" },
+        { color: "#ff66aa", label: "7【粉色-下边中点】" },
+        { color: "#ffffff", label: "8【白色-中心点】" },
+      ];
+
+      function formatCoord(value) {
+        return Number(value).toFixed(12);
+      }
+
+      function getNinePointsJsonText() {
+        return JSON.stringify(ninePoints, null, 2);
+      }
+
+      function printNinePointsToConsole() {
+        console.log("===== 可直接替换的 ninePoints =====");
+        console.log(`let ninePoints = ${JSON.stringify(ninePoints, null, 2)};`);
+      }
+
+      function syncNinePointsTextarea() {
+        pointsInput.value = getNinePointsJsonText();
+      }
+
+      function refreshAllByNinePoints(options = {}) {
+        const shouldSyncTextarea = options.syncTextarea !== false;
+        markers.forEach((mk, idx) => {
+          mk.setLatLng(ninePoints[idx]);
+        });
+        warpLayer.setControlPoints(ninePoints);
+        polyOutline.setLatLngs(outerOutlineIndex.map((idx) => ninePoints[idx]));
+        if (!warpLayer._onControlUpdate) {
+          drawTriMesh(ninePoints);
+        }
+        if (shouldSyncTextarea) {
+          syncNinePointsTextarea();
+        }
+      }
+
+      function applyNinePointsFromTextarea() {
+        try {
+          const parsed = JSON.parse(pointsInput.value);
+          if (!Array.isArray(parsed) || parsed.length !== 9) {
+            throw new Error("九个点必须是长度为 9 的数组");
+          }
+          const nextPoints = parsed.map((item, idx) => {
+            if (!Array.isArray(item) || item.length !== 2) {
+              throw new Error(`第 ${idx} 个点格式不正确`);
+            }
+            const lat = Number(item[0]);
+            const lng = Number(item[1]);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+              throw new Error(`第 ${idx} 个点包含非法数字`);
+            }
+            return [lat, lng];
+          });
+          ninePoints = nextPoints;
+          refreshAllByNinePoints({ syncTextarea: true });
+          printNinePointsToConsole();
+          pointsStatus.innerText = "已应用九个控制点坐标";
+          debugDom.innerText = "✅ 已应用九点经纬度";
+        } catch (error) {
+          console.error(error);
+          pointsStatus.innerText = `应用失败：${error.message}`;
+          debugDom.innerText = "❌ 九点坐标格式错误";
+        }
+      }
+
+      const warpLayer = L.warpTextureLayer("test.png", ninePoints, {
+        opacity: 1,
+      });
+      warpLayer.addTo(map);
+
+      // 外轮廓：外围8个控制点
+      const outerOutlineIndex = [0, 4, 1, 5, 2, 6, 3, 7];
+      const polyOutline = L.polygon([], {
+        fill: false,
+        color: "#f33",
+        weight: 2,
+      }).addTo(map);
+      polyOutline.setLatLngs(outerOutlineIndex.map((i) => ninePoints[i]));
+
+      const markers = [];
+      for (let i = 0; i < 9; i++) {
+        const cfg = markerConfig[i];
+        const mk = L.marker(ninePoints[i], {
+          draggable: true,
+          pane: "markerPane",
+          icon: L.divIcon({
+            html: `<div style="width:14px;height:14px;border-radius:50%;background:${cfg.color};border:2px solid white;box-sizing:border-box;box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>`,
+            className: "",
+            iconSize: [14, 14],
+            iconAnchor: [7, 7],
+          }),
+        }).addTo(map);
+        mk.bindTooltip(cfg.label);
+        mk.on("drag", () => {
+          const ll = mk.getLatLng();
+          ninePoints[i] = [ll.lat, ll.lng];
+          refreshAllByNinePoints({ syncTextarea: true });
+          printNinePointsToConsole();
+          pointsStatus.innerText = `已拖拽更新：${cfg.label}`;
+        });
+        markers.push(mk);
+      }
+
+      // ===================== 绘制米字形三角调试网格 =====================
+      let triLayers = [];
+      function drawTriMesh(points9) {
+        triLayers.forEach((l) => map.removeLayer(l));
+        triLayers = [];
+        TRIANGLES_INDEX.forEach((triIdxArr, triNo) => {
+          const latlngs = triIdxArr.map((idx) =>
+            L.latLng(points9[idx][0], points9[idx][1]),
+          );
+          latlngs.push(latlngs[0]);
+          const line = L.polyline(latlngs, {
+            color: "#0cf",
+            weight: 1.5,
+            dashArray: "5,5",
+          }).addTo(map);
+          triLayers.push(line);
+          const centerLat =
+            (latlngs[0].lat + latlngs[1].lat + latlngs[2].lat) / 3;
+          const centerLng =
+            (latlngs[0].lng + latlngs[1].lng + latlngs[2].lng) / 3;
+          const labelMarker = L.marker([centerLat, centerLng], {
+            icon: L.divIcon({
+              html: `<span style="background:#0cf;color:#000;padding:1px 3px;font-size:10px">T${triNo}</span>`,
+              className: "",
+              iconSize: [24, 12],
+              iconAnchor: [12, 6],
+            }),
+          }).addTo(map);
+          triLayers.push(labelMarker);
+        });
+      }
+      drawTriMesh(ninePoints);
+      warpLayer._onControlUpdate = drawTriMesh;
+
+      // ===================== 地图点击打点与GeoJSON导出 =====================
+      let captureMode = false;
+      let capturePoints = [];
+      let captureMarkers = [];
+      let selectedCaptureIndex = -1;
+      let isEditingCaptureName = false;
+
+      function getCaptureDefaultName(index) {
+        return `point_${index}`;
+      }
+
+      function createCaptureIcon(isSelected) {
+        const borderColor = isSelected ? "#ff3300" : "#111";
+        const bgColor = isSelected ? "#ffd34d" : "#00ff88";
+        return L.divIcon({
+          html: `<div style="width:14px;height:14px;border-radius:50%;background:${bgColor};border:2px solid ${borderColor};box-sizing:border-box;box-shadow:0 0 5px rgba(0,0,0,0.4);"></div>`,
+          className: "",
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+        });
+      }
+
+      function getCapturePointText(point, index) {
+        return `${index} ${point.name}\n[${formatCoord(point.lat)}, ${formatCoord(point.lng)}]`;
+      }
+
+      function syncSelectedCaptureEditor(force = false) {
+        if (
+          selectedCaptureIndex < 0 ||
+          selectedCaptureIndex >= capturePoints.length
+        ) {
+          captureNameInput.value = "";
+          return;
+        }
+        if (!force && isEditingCaptureName) {
+          return;
+        }
+        captureNameInput.value = capturePoints[selectedCaptureIndex].name;
+      }
+
+      function updateCaptureOutput() {
+        if (capturePoints.length === 0) {
+          captureOutput.value = "[]";
+          captureStatus.innerText = captureMode
+            ? "打点模式已开启，点击地图可添加经纬度点"
+            : "当前未开启打点模式";
+          return;
+        }
+        captureOutput.value = JSON.stringify(capturePoints, null, 2);
+        captureStatus.innerText = captureMode
+          ? `打点模式已开启，已采集 ${capturePoints.length} 个点${selectedCaptureIndex >= 0 ? `，当前选中 ${selectedCaptureIndex}` : ""}`
+          : `已采集 ${capturePoints.length} 个点${selectedCaptureIndex >= 0 ? `，当前选中 ${selectedCaptureIndex}` : ""}`;
+      }
+
+      function renderCaptureMarkers() {
+        captureMarkers.forEach((marker) => map.removeLayer(marker));
+        captureMarkers = [];
+        capturePoints.forEach((point, idx) => {
+          const marker = L.marker([point.lat, point.lng], {
+            draggable: true,
+            pane: "markerPane",
+            icon: createCaptureIcon(idx === selectedCaptureIndex),
+          }).addTo(map);
+          marker.bindTooltip(getCapturePointText(point, idx));
+          marker.on("click", () => {
+            selectedCaptureIndex = idx;
+            syncSelectedCaptureEditor(true);
+            renderCaptureMarkers();
+            updateCaptureOutput();
+          });
+          marker.on("drag", () => {
+            const ll = marker.getLatLng();
+            capturePoints[idx].lat = ll.lat;
+            capturePoints[idx].lng = ll.lng;
+            marker.bindTooltip(getCapturePointText(capturePoints[idx], idx));
+            updateCaptureOutput();
+          });
+          marker.on("dragend", () => {
+            selectedCaptureIndex = idx;
+            syncSelectedCaptureEditor(true);
+            renderCaptureMarkers();
+            updateCaptureOutput();
+          });
+          captureMarkers.push(marker);
+        });
+      }
+
+      function setCaptureMode(enabled) {
+        captureMode = enabled;
+        btnToggleCapture.classList.toggle("active", enabled);
+        btnToggleCapture.innerText = enabled ? "停止打点" : "开始打点";
+        updateCaptureOutput();
+      }
+
+      function addCapturePoint(latlng) {
+        const index = capturePoints.length;
+        const point = {
+          name: getCaptureDefaultName(index),
+          lat: latlng.lat,
+          lng: latlng.lng,
+        };
+        capturePoints.push(point);
+        selectedCaptureIndex = index;
+        syncSelectedCaptureEditor(true);
+        renderCaptureMarkers();
+        updateCaptureOutput();
+      }
+
+      function clearCapturePoints() {
+        captureMarkers.forEach((marker) => map.removeLayer(marker));
+        captureMarkers = [];
+        capturePoints = [];
+        selectedCaptureIndex = -1;
+        syncSelectedCaptureEditor(true);
+        updateCaptureOutput();
+      }
+
+      function applySelectedCaptureName() {
+        if (
+          selectedCaptureIndex < 0 ||
+          selectedCaptureIndex >= capturePoints.length
+        ) {
+          captureStatus.innerText = "请先点击一个地图打点，再设置名称";
+          return;
+        }
+        const nextName =
+          captureNameInput.value.trim() ||
+          getCaptureDefaultName(selectedCaptureIndex);
+        capturePoints[selectedCaptureIndex].name = nextName;
+        isEditingCaptureName = false;
+        renderCaptureMarkers();
+        updateCaptureOutput();
+        syncSelectedCaptureEditor(true);
+        captureStatus.innerText = `已设置点名：${nextName}`;
+      }
+
+      function promptSelectedCaptureName() {
+        if (
+          selectedCaptureIndex < 0 ||
+          selectedCaptureIndex >= capturePoints.length
+        ) {
+          captureStatus.innerText = "请先点击一个地图打点，再点名";
+          return;
+        }
+        const currentName = capturePoints[selectedCaptureIndex].name;
+        const nextName = window.prompt(
+          "请输入当前选中点的名称：",
+          currentName,
+        );
+        if (nextName === null) {
+          captureStatus.innerText = "已取消点名";
+          return;
+        }
+        const finalName =
+          nextName.trim() || getCaptureDefaultName(selectedCaptureIndex);
+        capturePoints[selectedCaptureIndex].name = finalName;
+        captureNameInput.value = finalName;
+        isEditingCaptureName = false;
+        renderCaptureMarkers();
+        updateCaptureOutput();
+        captureStatus.innerText = `已设置点名：${finalName}`;
+      }
+
+      function deleteSelectedCapturePoint() {
+        if (
+          selectedCaptureIndex < 0 ||
+          selectedCaptureIndex >= capturePoints.length
+        ) {
+          captureStatus.innerText = "请先点击一个地图打点，再删除";
+          return;
+        }
+        capturePoints.splice(selectedCaptureIndex, 1);
+        if (capturePoints.length === 0) {
+          selectedCaptureIndex = -1;
+        } else if (selectedCaptureIndex >= capturePoints.length) {
+          selectedCaptureIndex = capturePoints.length - 1;
+        }
+        capturePoints = capturePoints.map((point, idx) => ({
+          ...point,
+          name:
+            point.name && point.name.trim()
+              ? point.name
+              : getCaptureDefaultName(idx),
+        }));
+        syncSelectedCaptureEditor(true);
+        renderCaptureMarkers();
+        updateCaptureOutput();
+        captureStatus.innerText = "已删除选中点";
+      }
+
+      function exportCaptureGeoJSON() {
+        if (capturePoints.length === 0) {
+          captureStatus.innerText = "没有可导出的打点数据";
+          return;
+        }
+        const geojson = {
+          type: "FeatureCollection",
+          features: capturePoints.map((point, idx) => ({
+            type: "Feature",
+            properties: {
+              index: idx,
+              name: point.name,
+            },
+            geometry: {
+              type: "Point",
+              coordinates: [point.lng, point.lat],
+            },
+          })),
+        };
+        const blob = new Blob([JSON.stringify(geojson, null, 2)], {
+          type: "application/geo+json;charset=utf-8",
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "map_capture_points.geojson";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        captureStatus.innerText = `GeoJSON 已导出，共 ${capturePoints.length} 个点`;
+      }
+
+      map.on("click", (event) => {
+        if (!captureMode) return;
+        addCapturePoint(event.latlng);
+      });
+
+      btnLoadNinePoints.addEventListener("click", () => {
+        syncNinePointsTextarea();
+        pointsStatus.innerText = "已读取当前九点坐标";
+      });
+
+      btnApplyNinePoints.addEventListener("click", () => {
+        applyNinePointsFromTextarea();
+      });
+
+      btnPrintNinePoints.addEventListener("click", () => {
+        printNinePointsToConsole();
+        pointsStatus.innerText = "已在控制台打印九个点经纬度";
+      });
+
+      btnToggleCapture.addEventListener("click", () => {
+        setCaptureMode(!captureMode);
+      });
+
+      btnClearCapture.addEventListener("click", () => {
+        clearCapturePoints();
+        captureStatus.innerText = "已清空地图打点";
+      });
+
+      btnExportGeoJSON.addEventListener("click", () => {
+        exportCaptureGeoJSON();
+      });
+
+      btnApplyCaptureName.addEventListener("click", () => {
+        applySelectedCaptureName();
+      });
+
+      btnPromptCaptureName.addEventListener("click", () => {
+        promptSelectedCaptureName();
+      });
+
+      captureNameInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          applySelectedCaptureName();
+        }
+      });
+
+      captureNameInput.addEventListener("focus", () => {
+        isEditingCaptureName = true;
+      });
+
+      captureNameInput.addEventListener("input", () => {
+        isEditingCaptureName = true;
+      });
+
+      captureNameInput.addEventListener("blur", () => {
+        isEditingCaptureName = false;
+      });
+
+      btnDeleteCapturePoint.addEventListener("click", () => {
+        deleteSelectedCapturePoint();
+      });
+
+      syncNinePointsTextarea();
+      syncSelectedCaptureEditor(true);
+      updateCaptureOutput();
+
+      // 加载GeoJSON（如果存在）
+      fetch("./yn.json")
+        .then((response) => response.json())
+        .then((geojson) => {
+          L.geoJSON(geojson, {
+            style: function (feature) {
+              return { fillOpacity: 0, weight: 1 };
+            },
+          }).addTo(map);
+        })
+        .catch(() => {
+          /* 忽略加载错误 */
+        });
+    </script>
+  </body>
+</html>
