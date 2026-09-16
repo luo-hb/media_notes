@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>cesium 数据挤压查看</title>
+    <style>
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+      }
+
+      #mapContent {
+        width: 100vw;
+        height: 100vh;
+      }
+
+      /* 转速控制条样式 */
+      .speed-control {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        z-index: 999;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 15px 20px;
+        border-radius: 8px;
+        color: white;
+        font-family: Arial;
+        min-width: 300px;
+      }
+
+      .speed-slider {
+        width: 100%;
+        margin: 10px 0;
+        accent-color: #42b983;
+      }
+
+      .speed-value {
+        font-size: 18px;
+        font-weight: bold;
+        color: #42b983;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="mapContent"></div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>数据挤压 · GPU 高性能计算dem材质高度 · WebGL2</title>
+    <style>
+        body { margin: 0; background: #010508; color: #00ffcc; font-family: 'Consolas', monospace; overflow: hidden; user-select: none; }
+        #ui { position: absolute; top: 20px; left: 20px; z-index: 10; background: rgba(0,20,30,0.9); padding: 20px; border: 1px solid #00ffcc; border-radius: 8px; width: 340px; backdrop-filter: blur(5px); box-shadow: 0 0 10px rgba(0,255,204,0.1); }
+        canvas { width: 100vw; height: 100vh; display: block; cursor: grab; }
+        canvas:active { cursor: grabbing; }
+        .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; }
+        .value { color: #ffcc00; font-weight: bold; }
+        #status { padding: 8px; background: #1a3a3a; text-align: center; border-radius: 4px; margin-bottom: 15px; font-size: 12px; min-height: 20px; display: flex; align-items: center; justify-content: center; }
+        .loading { color: #ff4444; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+        .btn { display: block; width: 100%; padding: 8px; background: #1a3a3a; border: 1px solid #00ffcc; color: #00ffcc; border-radius: 4px; cursor: pointer; margin-bottom: 8px; font-family: inherit; transition: all 0.2s; text-align: center; text-decoration: none; box-sizing: border-box; }
+        .btn:hover { background: #2a5a5a; box-shadow: 0 0 8px rgba(0,255,204,0.2); }
+        .btn:active { transform: scale(0.98); }
+        input[type="file"] { display: none; }
+        .file-btn { background: #003322; border-color: #00aa88; margin-top: 15px; }
+        .file-btn:hover { background: #004433; }
+        button.active { background: #00ffcc; color: #010508; font-weight: bold; }
+        #debug { font-size: 12px; color: #88a; margin-top: 15px; border-top: 1px solid #333; padding-top: 10px; }
+        .hint { font-size: 11px; color: #557; margin-top: 10px; text-align: center; }
+        #title { position: fixed; top: 20px; right: 20px; z-index: 10; font-size: 20px; font-weight: bold; color: #00ffcc; text-shadow: 0 0 8px rgba(0, 255, 204, 0.6); letter-spacing: 2px; background: rgba(0, 20, 30, 0.7); padding: 8px 20px; border: 1px solid rgba(0, 255, 204, 0.3); border-radius: 6px; backdrop-filter: blur(4px); user-select: none; white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div id="status">就绪</div>
+        <button class="btn" onclick="loadRemoteFile('1000.tif')">加载 1000.tif</button>
+        <button class="btn" onclick="loadRemoteFile('250.tif')">加载 250.tif</button>
+        <button class="btn" onclick="loadRemoteFile('90.tif')">加载 90.tif</button>
+        <label class="btn file-btn"> 📂 本地上传文件 <input type="file" id="fileInput" accept=".tif,.tiff"> </label>
+        <div class="row">解析耗时: <span id="t_worker" class="value">--</span></div>
+        <div class="row">显存同步: <span id="t_gpu" class="value">--</span></div>
+        <div id="debug">Ready.</div>
+        <div style="margin-top: 15px;">
+            <div class="row"> 网格分辨率: <span id="resVal" class="value">200</span> </div>
+            <input type="range" id="resSlider" min="1" max="1000" value="200" style="width: 100%;">
+        </div>
+        <div style="margin-top: 10px;">
+            <div class="row"> 地形拉伸: <span id="zVal" class="value">8.0</span> </div>
+            <input type="range" id="zSlider" min="1" max="200" value="80" style="width: 100%;">
+        </div>
+        <button id="resetBtn" class="btn">🎥 重置视角</button>
+        <button id="modeBtn" class="btn active">/ 线框模式</button>
+        <button id="colorBtn" class="btn">🎨 切换配色方案</button>
+        <div class="hint">左键拖拽旋转 | 滚轮缩放</div>
+    </div>
+    <canvas id="glCanvas"></canvas>
+    <div id="title">数据挤压 · GPU 高性能计算dem材质高度 · WebGL2</div>
+    <script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+
+    <script>
+        // --- 初始化 WebGL2 ---
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl2');
+        if (!gl) { alert('您的浏览器不支持 WebGL 2'); }
+
+        // --- 状态变量 ---
+        let currentWorker = null;
+        let heightTex = null;
+        let currentBuffers = null;
+        let viewState = { rotX: -0.9, rotZ: 0, dist: 20 };
+        let isDragging = false;
+        let lastMouse = { x: 0, y: 0 };
+        let sceneMin = 0, sceneMax = 3000;
+        let zScale = 8.0;
+        let currentRes = 200;
+        let isWireframe = true;
+
+        // --- 配色方案逻辑 ---
+        const colorPresets = [
+            { name: "默认-海洋", low: [0.0, 0.1, 0.2], high: [0.1, 0.8, 0.4] },
+            { name: "火山-热", low: [0.2, 0.0, 0.0], high: [1.0, 0.8, 0.2] },
+            { name: "灰度-地形", low: [0.1, 0.1, 0.1], high: [0.9, 0.9, 0.9] },
+            { name: "蓝紫-深邃", low: [0.1, 0.0, 0.2], high: [0.4, 0.8, 1.0] }
+        ];
+        let currentColorIdx = 0;
+
+        // --- UI 事件绑定 ---
+        document.getElementById('zSlider').oninput = (e) => {
+            zScale = e.target.value / 10.0;
+            document.getElementById('zVal').innerText = zScale.toFixed(1);
+        };
+        document.getElementById('resSlider').oninput = (e) => {
+            currentRes = parseInt(e.target.value);
+            document.getElementById('resVal').innerText = currentRes;
+            if (heightTex) generateBuffers(currentRes);
+        };
+        document.getElementById('resetBtn').onclick = () => {
+            viewState = { rotX: -0.9, rotZ: 0, dist: 20 };
+        };
+        const modeBtn = document.getElementById('modeBtn');
+        modeBtn.onclick = () => {
+            isWireframe = !isWireframe;
+            if (isWireframe) {
+                modeBtn.innerText = '/ 线框模式';
+                modeBtn.classList.remove('active');
+            } else {
+                modeBtn.innerText = '■ 面片模式';
+                modeBtn.classList.add('active');
+            }
+            if(heightTex) generateBuffers(currentRes);
+        };
+        document.getElementById('colorBtn').onclick = () => {
+            currentColorIdx = (currentColorIdx + 1) % colorPresets.length;
+            document.getElementById('colorBtn').innerText = "🎨 配色: " + colorPresets[currentColorIdx].name;
+        };
+
+        // --- 鼠标交互 ---
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastMouse.x = e.clientX;
+            lastMouse.y = e.clientY;
+        });
+        window.addEventListener('mouseup', () => isDragging = false);
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - lastMouse.x;
+            const dy = e.clientY - lastMouse.y;
+            viewState.rotZ += dx * 0.01;
+            viewState.rotX += dy * 0.01;
+            lastMouse.x = e.clientX;
+            lastMouse.y = e.clientY;
+        });
+        canvas.addEventListener('wheel', (e) => {
+            viewState.dist += e.deltaY * 0.05;
+            viewState.dist = Math.max(1, Math.min(100, viewState.dist));
+            e.preventDefault();
+        }, { passive: false });
+
+        // --- 核心逻辑：处理数据 ---
+        function handleData(buffer, fileName) {
+            document.getElementById('status').innerHTML = '<span class="loading">正在解析地形数据...</span>';
+            if(currentWorker) currentWorker.terminate();
+            if(heightTex) { gl.deleteTexture(heightTex); heightTex = null; }
+            if(currentBuffers) { gl.deleteBuffer(currentBuffers.u); gl.deleteBuffer(currentBuffers.i); currentBuffers = null; }
+
+            const workerStart = performance.now();
+            currentWorker = new Worker('worker.js');
+            currentWorker.postMessage({ buffer });
+            currentWorker.onmessage = (msg) => {
+                if(msg.data.error) {
+                    document.getElementById('status').innerText = '❌ 错误: ' + msg.data.error;
+                    return alert(msg.data.error);
+                }
+                const { data, width, height, min, max } = msg.data;
+                const tWorker = performance.now() - workerStart;
+                document.getElementById('t_worker').innerText = tWorker.toFixed(1) + "ms";
+
+                // 上传显存
+                const gpuStart = performance.now();
+                heightTex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, heightTex);
+                gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, new Float32Array(data));
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                const tGpu = performance.now() - gpuStart;
+                document.getElementById('t_gpu').innerText = tGpu.toFixed(1) + "ms";
+
+                sceneMin = min;
+                sceneMax = max;
+                document.getElementById('debug').innerText = `尺寸: ${width}x${height} | 海拔: ${min.toFixed(2)} ~ ${max.toFixed(2)}`;
+                document.getElementById('status').innerHTML = '✅ 加载完成: ' + fileName;
+                generateBuffers(currentRes);
+            };
+        }
+
+        // --- 加载远程/同目录文件 ---
+        async function loadRemoteFile(url) {
+            document.getElementById('status').innerText = '正在请求: ' + url;
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const arrayBuffer = await response.arrayBuffer();
+                handleData(arrayBuffer, url);
+            } catch (err) {
+                console.error(err);
+                document.getElementById('status').innerText = '❌ 加载失败';
+                alert('无法加载文件: ' + url + '\n\n可能原因：\n1. 文件不存在于当前目录。\n2. 浏览器安全策略限制 (请尝试使用本地服务器运行，而非直接双击打开 html)。');
+            }
+        }
+
+        // --- 本地文件上传 ---
+        document.getElementById('fileInput').onchange = (e) => {
+            const file = e.target.files[0];
+            if(!file) return;
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                handleData(evt.target.result, file.name);
+            };
+            reader.readAsArrayBuffer(file);
+        };
+
+        // --- 网格生成 ---
+        function generateBuffers(res) {
+            if (currentBuffers) {
+                gl.deleteBuffer(currentBuffers.u);
+                gl.deleteBuffer(currentBuffers.i);
+            }
+            const uvs = [];
+            const idx = [];
+            for (let y = 0; y <= res; y++) {
+                for (let x = 0; x <= res; x++) {
+                    uvs.push(x / res, y / res);
+                }
+            }
+            if (isWireframe) {
+                // 线框模式：生成横向和纵向的线段索引
+                for (let y = 0; y <= res; y++) {
+                    for (let x = 0; x < res; x++) {
+                        const i = y * (res + 1) + x;
+                        idx.push(i, i + 1);
+                    }
+                }
+                for (let x = 0; x <= res; x++) {
+                    for (let y = 0; y < res; y++) {
+                        const i = y * (res + 1) + x;
+                        idx.push(i, i + res + 1);
+                    }
+                }
+            } else {
+                // 面片模式：生成三角形索引
+                for (let y = 0; y < res; y++) {
+                    for (let x = 0; x < res; x++) {
+                        const i = y * (res + 1) + x;
+                        idx.push(i, i + res + 1, i + res + 2);
+                        idx.push(i, i + res + 2, i + 1);
+                    }
+                }
+            }
+            const uB = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, uB);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvs), gl.STATIC_DRAW);
+            const iB = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, iB);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(idx), gl.STATIC_DRAW);
+            currentBuffers = { u: uB, i: iB, count: idx.length };
+        }
+
+        // --- 着色器 ---
+        const vsSource = `#version 300 es
+        in vec2 aUV;
+        uniform mat4 uP, uMV;
+        uniform sampler2D uTex;
+        uniform float uMin, uMax, uZ;
+        out float vH;
+        void main() {
+            float h = texture(uTex, aUV).r;
+            vH = (h - uMin) / (uMax - uMin + 0.0001);
+            float z = vH * uZ;
+            vec4 pos = vec4((aUV.x - 0.5) * 15.0, (aUV.y - 0.5) * 15.0, z, 1.0);
+            gl_Position = uP * uMV * pos;
+        }`;
+
+        const fsSource = `#version 300 es
+        precision highp float;
+        in float vH;
+        out vec4 fC;
+        uniform vec3 uColorLow;
+        uniform vec3 uColorHigh;
+        void main() {
+            vec3 color = mix(uColorLow, uColorHigh, vH);
+            fC = vec4(color, 1.0);
+        }`;
+
+        function compileShader(type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        const prg = gl.createProgram();
+        gl.attachShader(prg, compileShader(gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(prg, compileShader(gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(prg);
+        gl.useProgram(prg);
+
+        const loc = {
+            aUV: gl.getAttribLocation(prg, 'aUV'),
+            uP: gl.getUniformLocation(prg, 'uP'),
+            uMV: gl.getUniformLocation(prg, 'uMV'),
+            uTex: gl.getUniformLocation(prg, 'uTex'),
+            uMin: gl.getUniformLocation(prg, 'uMin'),
+            uMax: gl.getUniformLocation(prg, 'uMax'),
+            uZ: gl.getUniformLocation(prg, 'uZ'),
+            uColorLow: gl.getUniformLocation(prg, 'uColorLow'),
+            uColorHigh: gl.getUniformLocation(prg, 'uColorHigh')
+        };
+
+        gl.enableVertexAttribArray(loc.aUV);
+        gl.vertexAttribPointer(loc.aUV, 2, gl.FLOAT, false, 0, 0);
+        gl.uniform1i(loc.uTex, 0);
+
+        // --- 渲染循环 ---
+        function render() {
+            requestAnimationFrame(render);
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0.01, 0.03, 0.05, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.enable(gl.DEPTH_TEST);
+
+            if (!heightTex) return;
+
+            const aspect = canvas.width / canvas.height;
+            const proj = mat4.create();
+            mat4.perspective(proj, Math.PI / 4, aspect, 0.1, 100.0);
+            const mv = mat4.create();
+            mat4.translate(mv, mv, [0, 0, -viewState.dist]);
+            mat4.rotateX(mv, mv, viewState.rotX);
+            mat4.rotateZ(mv, mv, viewState.rotZ);
+
+            gl.uniformMatrix4fv(loc.uP, false, proj);
+            gl.uniformMatrix4fv(loc.uMV, false, mv);
+            gl.uniform1f(loc.uMin, sceneMin);
+            gl.uniform1f(loc.uMax, sceneMax);
+            gl.uniform1f(loc.uZ, zScale);
+
+            const colors = colorPresets[currentColorIdx];
+            gl.uniform3fv(loc.uColorLow, colors.low);
+            gl.uniform3fv(loc.uColorHigh, colors.high);
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, heightTex);
+            gl.bindBuffer(gl.ARRAY_BUFFER, currentBuffers.u);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, currentBuffers.i);
+            gl.vertexAttribPointer(loc.aUV, 2, gl.FLOAT, false, 0, 0);
+
+            // 修复：根据模式选择不同的绘制方式
+            if (isWireframe) {
+                gl.drawElements(gl.LINES, currentBuffers.count, gl.UNSIGNED_INT, 0);
+            } else {
+                gl.drawElements(gl.TRIANGLES, currentBuffers.count, gl.UNSIGNED_INT, 0);
+            }
+        }
+        render();
+        
+        // 页面加载完成调数据
+        window.onload  = () => {
+            loadRemoteFile('1000.tif')
+        };
+
+        // --- 窗口自适应 ---
+        window.onresize = () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        };
+        window.onresize();
+    </script>
+</body>
+</html>

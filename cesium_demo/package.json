@@ -1,0 +1,21 @@
+{
+  "name": "cesium_demo",
+  "version": "1.0.0",
+  "license": "ISC",
+  "dependencies": {
+    "cesium": "^1.133.0",
+    "dat.gui": "^0.7.9",
+    "leaflet": "^1.9.4",
+    "mockweb": "file:",
+    "ol": "^10.5.0",
+    "pako": "^2.1.0"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  },
+  "scripts": {
+    "start": "node save_flie.js && vite",
+    "dev": "node save_flie.js && vite",
+    "serve": "node save_flie.js && vite"
+  }
+}
