@@ -1,0 +1,323 @@
+<script>
+/* ================================================================
+ * 8. 场景 / 相机 / 渲染器 / 光照 / 地面 / 车辆
+ * ==============================================================*/
+var renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+var scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1f222a);
+scene.fog = new THREE.Fog(0x1f222a, 90, 200);
+
+var camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 400);
+
+// 光照：主光 + 半球补光 + 环境
+var sun = new THREE.DirectionalLight(0xffeedd, 1.3);
+sun.position.set(35, 45, 25);
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0x93a7d9, 0x23262f, 0.85));
+scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+
+// 地面 + 网格
+var groundMat = new THREE.MeshLambertMaterial({ color: 0x262a34 });
+var ground = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+scene.add(ground);
+var grid = new THREE.GridHelper(240, 60, 0x3c4354, 0x303643);
+grid.position.y = 0.01;
+scene.add(grid);
+
+// 车辆模型（程序化，无需外部文件）：底盘 + 驾驶舱 + 4 个圆柱轮子，轮子随行驶滚动
+var MAX_VEHICLES = 3000;
+var WHEEL_COUNT = MAX_VEHICLES * 4;
+var WHEEL_RADIUS = 0.42;
+var wheelGeo = new THREE.CylinderGeometry(WHEEL_RADIUS, WHEEL_RADIUS, 0.36, 20);
+wheelGeo.rotateZ(Math.PI / 2);   // 圆柱轴转到 X 方向（轮轴横穿车宽，前进时绕 X 滚动）
+var hubGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.38, 12);  // 轮毂（亮色圆盘）
+hubGeo.rotateZ(Math.PI / 2);
+var bodyGeo = new THREE.BoxGeometry(1.9, 0.55, 4.4);   // 底盘
+var cabinGeo = new THREE.BoxGeometry(1.5, 0.6, 2.5);   // 驾驶舱（偏后，车头朝 +Z）
+var bodyMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+var cabinMat = new THREE.MeshLambertMaterial({ color: 0x1e2a38 }); // 深色玻璃舱
+var wheelMat = new THREE.MeshLambertMaterial({ color: 0x2f3540 });   // 轮胎（可见深灰）
+var hubMat = new THREE.MeshLambertMaterial({ color: 0x8b93a1 });     // 轮毂（浅灰亮盘）
+var carBodies = new THREE.InstancedMesh(bodyGeo, bodyMat, MAX_VEHICLES);
+var carCabins = new THREE.InstancedMesh(cabinGeo, cabinMat, MAX_VEHICLES);
+var carWheels = new THREE.InstancedMesh(wheelGeo, wheelMat, WHEEL_COUNT);
+var carHubs = new THREE.InstancedMesh(hubGeo, hubMat, WHEEL_COUNT);
+carBodies.count = 0; carCabins.count = 0; carWheels.count = 0; carHubs.count = 0;
+carBodies.frustumCulled = false; carCabins.frustumCulled = false;
+carWheels.frustumCulled = false; carHubs.frustumCulled = false;
+scene.add(carBodies); scene.add(carCabins); scene.add(carWheels); scene.add(carHubs);
+var carMatrix = new THREE.Matrix4();
+var carColor = new THREE.Color();
+// 四个轮位：0 左前(-x,-z) 1 右前(+x,-z) 2 左后(-x,+z) 3 右后(+x,+z)
+var wheelLocal = [];
+var WHEEL_X = 0.93, WHEEL_Z = 1.4;
+wheelLocal.push(new THREE.Matrix4().makeTranslation(-WHEEL_X, 0, -WHEEL_Z));
+wheelLocal.push(new THREE.Matrix4().makeTranslation(WHEEL_X, 0, -WHEEL_Z));
+wheelLocal.push(new THREE.Matrix4().makeTranslation(-WHEEL_X, 0, WHEEL_Z));
+wheelLocal.push(new THREE.Matrix4().makeTranslation(WHEEL_X, 0, WHEEL_Z));
+var wheelAngle = new Float32Array(MAX_VEHICLES);   // 每辆车滚动角（弧度）
+var rotM = new THREE.Matrix4();
+var tmpM = new THREE.Matrix4();
+var BODY_Y = 0.695;   // 底盘中心高（底 0.42 贴轮顶）
+var CABIN_Y = 1.27;   // 驾驶舱中心高
+
+/* ================================================================
+ * 9. 加载内嵌 MSDF 图集并创建车牌系统
+ * ==============================================================*/
+var plateSystem = null;
+var statusEl = document.getElementById("stats");
+
+new THREE.TextureLoader().load(ATLAS_PNG_DATAURL, function (texture) {
+  try {
+    var atlasData = buildGlyphUVs(ATLAS_JSON);
+    if (texture.image.width !== atlasData.meta.width || texture.image.height !== atlasData.meta.height) {
+      throw new Error("图集 PNG 尺寸与 JSON 不一致");
+    }
+    texture.flipY = true;
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    atlasData.texture = texture;
+
+    plateSystem = createPlateLabels(MAX_VEHICLES, atlasData);
+    scene.add(plateSystem.mesh);
+    applyConfig(parseInt(countRange.value, 10));
+    startLoop();
+    statusEl.innerHTML = "WebGL2 · 图集 1024×1024 · " + glyphChars.length + " 字形（含 34 省级汉字）· 距离场 8px<br>实例：—　车牌绘制批次：1<br>模板顶点：36 · 三角形：18";
+  } catch (e) {
+    statusEl.textContent = "图集初始化失败: " + e.message;
+    console.error(e);
+  }
+});
+
+/* ================================================================
+ * 10. 配置布局：数量 + 示例车牌文本
+ * ==============================================================*/
+var PROVINCES = "京津沪渝冀晋蒙辽吉黑苏浙皖闽赣鲁豫鄂湘粤桂琼川贵云藏陕甘青宁新台港澳";
+// 34 个省级行政区各一块示例车牌（汉字 + 发牌机关字母 + 5 位编号）
+var PROVINCE_PLATES = [
+  "京A12345", "津B12345", "沪C12345", "渝D12345",
+  "冀E12345", "晋F12345", "蒙G12345", "辽H12345",
+  "吉J12345", "黑K12345", "苏L12345", "浙M12345",
+  "皖N12345", "闽P12345", "赣Q12345", "鲁R12345",
+  "豫S12345", "鄂T12345", "湘U12345", "粤V12345",
+  "桂W12345", "琼X12345", "川Y12345", "贵Z12345",
+  "云A67890", "藏B67890", "陕C67890", "甘D67890",
+  "青E67890", "宁F67890", "新G67890", "台H67890",
+  "港J67890", "澳K67890"
+];
+// 确定性伪随机车牌：省份 + 字母 + 5 位数字
+function randomPlate(i) {
+  var letters = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  var p = PROVINCES[(i * 7 + 3) % PROVINCES.length];
+  var l = letters[(i * 13 + 5) % letters.length];
+  var n = String((i * 7919 + 1234) % 100000).padStart(5, "0");
+  return p + l + n;
+}
+
+var laneOf = new Int32Array(MAX_VEHICLES);   // 所在车道
+var vOf = new Int32Array(MAX_VEHICLES);      // 车道内序号
+var textOf = new Array(MAX_VEHICLES);        // 每辆车文本（距离剔除恢复用）
+var hiddenLabels = new Uint8Array(MAX_VEHICLES); // 距离剔除隐藏状态缓存
+var LABEL_FAR = 100;  // 标签距相机超过该值则隐藏（剔除过远实例）
+
+function applyConfig(count, customTexts) {
+  if (!plateSystem) return;
+  count = Math.max(10, Math.min(MAX_VEHICLES, count));
+  // 车道式布局：车辆沿 Z 方向排成车流，X 方向只分布少量车道
+  var lanes = Math.max(3, Math.min(10, Math.round(Math.sqrt(count * 0.6))));
+  var perLane = Math.ceil(count / lanes);
+  var laneSpacing = 8.0;   // 车道间距
+  var gapZ = 7.0;          // 同车道前后间距
+  var laneStride = perLane * gapZ;
+  for (var i = 0; i < count; i++) {
+    var lane = Math.min(lanes - 1, Math.floor(i / perLane));
+    var v = i % perLane;
+    var x = (lane - (lanes - 1) / 2) * laneSpacing;
+    var z0 = (v - (perLane - 1) / 2) * gapZ;
+    laneOf[i] = lane; vOf[i] = v;
+    var text;
+    if (customTexts && customTexts[i]) text = customTexts[i];
+    else if (i < PROVINCE_PLATES.length) text = PROVINCE_PLATES[i];
+    else text = randomPlate(i);
+    plateSystem.setText(i, text);
+    textOf[i] = text;
+    plateSystem.setPosition(i, x, 2.0, z0);
+    // 车辆：底盘 + 驾驶舱 + 4 轮
+    carMatrix.makeTranslation(x, BODY_Y, z0);
+    carBodies.setMatrixAt(i, carMatrix);
+    carMatrix.makeTranslation(x, CABIN_Y, z0 - 0.25);
+    carCabins.setMatrixAt(i, carMatrix);
+    wheelAngle[i] = 0;
+    rotM.makeRotationX(0);
+    for (var w = 0; w < 4; w++) {
+      tmpM.makeTranslation(x, WHEEL_RADIUS, z0);
+      tmpM.multiply(wheelLocal[w]);
+      tmpM.multiply(rotM);   // 顺序：先到轮位，再绕轮子自身轴心滚动
+      carWheels.setMatrixAt(i * 4 + w, tmpM);
+      carHubs.setMatrixAt(i * 4 + w, tmpM);
+    }
+    carColor.setHSL(((i * 0.618) % 1), 0.38, 0.52);
+    carBodies.setColorAt(i, carColor);
+  }
+  plateSystem.mesh.count = count;
+  carBodies.count = count;
+  carCabins.count = count;
+  carWheels.count = count * 4;
+  carHubs.count = count * 4;
+  carBodies.instanceMatrix.needsUpdate = true;
+  carCabins.instanceMatrix.needsUpdate = true;
+  carWheels.instanceMatrix.needsUpdate = true;
+  carHubs.instanceMatrix.needsUpdate = true;
+  if (carBodies.instanceColor) carBodies.instanceColor.needsUpdate = true;
+  countOut.textContent = count;
+  statsLine(count);
+}
+
+function statsLine(count) {
+  statusEl.innerHTML = "WebGL2 · 图集 1024×1024 · " + glyphChars.length + " 字形（含 34 省级汉字）· 距离场 8px<br>实例：" + count + "　车牌绘制批次：1<br>模板顶点：36 · 三角形：18";
+}
+
+/* ================================================================
+ * 11. 轨道控制（拖拽旋转 / 滚轮缩放，限位）
+ * ==============================================================*/
+var cam = { theta: 0.55, phi: 1.12, radius: 40, target: new THREE.Vector3(0, 1.6, 0) };
+var isDrag = false, lastX = 0, lastY = 0;
+function applyCamera() {
+  var sp = Math.sin(cam.phi), cp = Math.cos(cam.phi);
+  camera.position.set(
+    cam.target.x + cam.radius * sp * Math.sin(cam.theta),
+    cam.target.y + cam.radius * cp,
+    cam.target.z + cam.radius * sp * Math.cos(cam.theta)
+  );
+  camera.lookAt(cam.target);
+}
+function onDown(x, y) { isDrag = true; lastX = x; lastY = y; }
+function onMove(x, y) {
+  if (!isDrag) return;
+  // 向右拖 = 场景跟着向右转（抓取旋转直觉）
+  cam.theta += (x - lastX) * 0.005;
+  cam.phi += (y - lastY) * 0.005;
+  cam.phi = Math.max(0.15, Math.min(1.5, cam.phi));
+  lastX = x; lastY = y;
+}
+function onUp() { isDrag = false; }
+function onWheel(d) {
+  cam.radius *= Math.exp(d * 0.0012);
+  cam.radius = Math.max(7, Math.min(90, cam.radius));
+}
+renderer.domElement.addEventListener("pointerdown", function (e) { onDown(e.clientX, e.clientY); renderer.domElement.setPointerCapture(e.pointerId); });
+window.addEventListener("pointermove", function (e) { onMove(e.clientX, e.clientY); });
+window.addEventListener("pointerup", onUp);
+renderer.domElement.addEventListener("wheel", function (e) { e.preventDefault(); onWheel(e.deltaY); }, { passive: false });
+renderer.domElement.addEventListener("touchstart", function (e) { if (e.touches.length === 1) onDown(e.touches[0].clientX, e.touches[0].clientY); }, { passive: true });
+renderer.domElement.addEventListener("touchmove", function (e) { if (e.touches.length === 1) onMove(e.touches[0].clientX, e.touches[0].clientY); }, { passive: true });
+renderer.domElement.addEventListener("touchend", onUp);
+
+/* ================================================================
+ * 12. UI 绑定
+ * ==============================================================*/
+var countRange = document.getElementById("countRange");
+var countOut = document.getElementById("countOut");
+var speedRange = document.getElementById("speedRange");
+var speedOut = document.getElementById("speedOut");
+var applyBtn = document.getElementById("applyBtn");
+var resetBtn = document.getElementById("resetBtn");
+
+countRange.addEventListener("input", function () {
+  countOut.textContent = countRange.value;
+  applyConfig(parseInt(countRange.value, 10));
+});
+speedRange.addEventListener("input", function () { speedOut.textContent = parseFloat(speedRange.value).toFixed(1); });
+applyBtn.addEventListener("click", function () {
+  var customs = [document.getElementById("p0").value, document.getElementById("p1").value, document.getElementById("p2").value];
+  applyConfig(parseInt(countRange.value, 10), customs);
+});
+resetBtn.addEventListener("click", function () {
+  cam.theta = 0.55; cam.phi = 1.12; cam.radius = 40;
+  cam.target.set(0, 1.6, 0);
+});
+
+/* ================================================================
+ * 13. 动画循环：车辆移动只更新实例矩阵，文字/几何/图集不重建
+ * ==============================================================*/
+var running = false;
+function startLoop() {
+  if (running) return;
+  running = true;
+  var lastMs = 0;
+  renderer.setAnimationLoop(function (timeMs) {
+    var t = timeMs * 0.001;
+    var dt = lastMs ? (timeMs - lastMs) * 0.001 : 0;
+    lastMs = timeMs;
+    var speed = parseFloat(speedRange.value);
+    var count = plateSystem ? plateSystem.mesh.count : 0;
+    var lanes = Math.max(3, Math.min(10, Math.round(Math.sqrt(count * 0.6))));
+    var perLane = Math.ceil(count / lanes);
+    var gapZ = 7.0;
+    var span = perLane * gapZ;
+    var laneSpacing = 8.0;
+    for (var i = 0; i < count; i++) {
+      // 沿 Z 匀速前进，出路段后从另一端循环进入 → 连续车流
+      var z = (((vOf[i] - (perLane - 1) / 2) * gapZ + t * speed * 3 + i * 0.13) % span + span) % span - span / 2;
+      var x = (laneOf[i] - (lanes - 1) / 2) * laneSpacing + Math.sin(t * 0.7 + i) * 0.5;
+      // 距离剔除：标签离相机太远就隐藏，避免远处小标签与近处标签错误叠层
+      var ddx = x - camera.position.x, ddy = 2.0 - camera.position.y, ddz = z - camera.position.z;
+      var dist = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+      if (dist > LABEL_FAR) {
+        if (!hiddenLabels[i]) { hiddenLabels[i] = 1; plateSystem.setText(i, ""); }
+      } else if (hiddenLabels[i]) {
+        hiddenLabels[i] = 0; plateSystem.setText(i, textOf[i]);
+      }
+      plateSystem.setPosition(i, x, 2.0, z);
+      carMatrix.makeTranslation(x, BODY_Y, z);
+      carBodies.setMatrixAt(i, carMatrix);
+      carMatrix.makeTranslation(x, CABIN_Y, z - 0.25);
+      carCabins.setMatrixAt(i, carMatrix);
+      // 轮子滚动：角度增量 = 前进距离 / 半径
+      wheelAngle[i] += (dt * speed * 3) / WHEEL_RADIUS;
+      rotM.makeRotationX(wheelAngle[i]);
+      for (var w = 0; w < 4; w++) {
+        tmpM.makeTranslation(x, WHEEL_RADIUS, z);
+        tmpM.multiply(wheelLocal[w]);
+        tmpM.multiply(rotM);   // 先到轮位，再绕轮子自身轴心滚动
+        carWheels.setMatrixAt(i * 4 + w, tmpM);
+        carHubs.setMatrixAt(i * 4 + w, tmpM);
+      }
+    }
+    if (count > 0) {
+      carBodies.instanceMatrix.needsUpdate = true;
+      carCabins.instanceMatrix.needsUpdate = true;
+      carWheels.instanceMatrix.needsUpdate = true;
+      carHubs.instanceMatrix.needsUpdate = true;
+    }
+    applyCamera();
+    renderer.render(scene, camera);
+  });
+}
+
+/* 首帧兜底：图集就绪前也渲染一帧（地面 + 光照），避免黑屏 */
+applyCamera();
+renderer.render(scene, camera);
+
+window.addEventListener("resize", function () {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
+<!--  本项目 基于  微信-公众号： 大前端私房小菜 大佬 分享的微信文章 借助AI实现的
+Three.js 高性能渲染海量车牌标签
+https://mp.weixin.qq.com/s/esIbjNbQaGbFCO0WzAQ3Yg
+ -->
+<!-- 分享的意义，文章大家上手有难度，大佬没有分享项目效果，我借助AI都搞了四五个小时才实现的 -->

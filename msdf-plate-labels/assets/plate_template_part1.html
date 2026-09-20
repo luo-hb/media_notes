@@ -1,0 +1,305 @@
+<!--  本项目 基于  微信-公众号： 大前端私房小菜 大佬 分享的微信文章 借助AI实现的
+Three.js 高性能渲染海量车牌标签
+https://mp.weixin.qq.com/s/esIbjNbQaGbFCO0WzAQ3Yg
+ -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>全国车牌 MSDF 标签 · 34 省级汉字 · WebGL2 实例化</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23203050'/%3E%3Crect x='6' y='14' width='52' height='36' rx='4' fill='%230D2755' stroke='%234F7CFF' stroke-width='2'/%3E%3Ctext x='32' y='40' font-size='20' text-anchor='middle' fill='white' font-family='monospace'%3E京A8%3C/text%3E%3C/svg%3E">
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#1f222a;font-family:"Segoe UI",system-ui,"Microsoft YaHei",sans-serif;color:#e8eaf0}
+  canvas{display:block}
+  #hud{position:fixed;left:16px;top:14px;pointer-events:none;z-index:10}
+  #hud h1{margin:0;font-size:17px;font-weight:600;letter-spacing:.5px}
+  #hud p{margin:5px 0 0;font-size:12px;color:#9aa3b5}
+  #panel{position:fixed;right:16px;bottom:16px;width:288px;background:rgba(24,27,35,.86);border:1px solid #333a4a;border-radius:12px;padding:14px 16px;z-index:10;backdrop-filter:blur(6px);box-shadow:0 8px 28px rgba(0,0,0,.35)}
+  #panel h2{margin:0 0 10px;font-size:13px;font-weight:600;color:#c9d1e4}
+  .row{display:flex;align-items:center;justify-content:space-between;margin:8px 0;font-size:12px;color:#aeb6c8}
+  .row label{flex:0 0 auto}
+  .row output{min-width:52px;text-align:right;font-variant-numeric:tabular-nums;color:#e8eaf0}
+  input[type=range]{flex:1;margin:0 10px;accent-color:#4f7cff}
+  .plates input{width:100%;box-sizing:border-box;margin:4px 0;padding:7px 9px;border-radius:7px;border:1px solid #3a4154;background:#171a22;color:#fff;font-size:13px;letter-spacing:1.5px;font-family:Consolas,"Courier New",monospace}
+  .plates input:focus{outline:1px solid #4f7cff}
+  .btns{display:flex;gap:8px;margin-top:10px}
+  button{flex:1;padding:8px 0;border:0;border-radius:8px;background:#4f7cff;color:#fff;font-size:13px;cursor:pointer}
+  button:hover{background:#5f8aff}
+  button.ghost{background:#2c3242;color:#c9d1e4}
+  button.ghost:hover{background:#39415a}
+  #stats{margin-top:10px;font-size:11px;color:#7f8899;border-top:1px solid #2c3242;padding-top:9px;line-height:1.7}
+  .hint{position:fixed;left:16px;bottom:16px;font-size:11px;color:#6b7385;z-index:5;pointer-events:none}
+  @media (max-width:700px){ #panel{right:10px;bottom:10px;left:10px;width:auto} #hud{top:10px;left:12px} #hud h1{font-size:14px} }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <h1>全国车牌标签 · 34 省级汉字 · WebGL2 + MSDF 实例化</h1>
+  <p>全部车牌共享 1 份模板几何体与 1 份 MSDF 图集材质（70 字形），GPU 实例化</p>
+</div>
+
+<div id="panel">
+  <h2>控制台</h2>
+  <div class="row"><label>车牌数量</label><input type="range" id="countRange" min="10" max="3000" step="10" value="400"><output id="countOut">400</output></div>
+  <div class="row"><label>行驶速度</label><input type="range" id="speedRange" min="0" max="4" step="0.1" value="1"><output id="speedOut">1.0</output></div>
+  <div class="plates">
+    <div class="row" style="margin-top:10px"><label>前 3 辆示例车牌</label></div>
+    <input id="p0" maxlength="8" value="京A12345" spellcheck="false">
+    <input id="p1" maxlength="8" value="粤B88888" spellcheck="false">
+    <input id="p2" maxlength="8" value="沪C00001" spellcheck="false">
+  </div>
+  <div class="btns">
+    <button id="applyBtn">应用车牌</button>
+    <button id="resetBtn" class="ghost">重置视角</button>
+  </div>
+  <div id="stats">实例：—　车牌绘制批次：1<br>模板顶点：36 · 三角形：18</div>
+</div>
+
+<div class="hint">拖拽旋转 · 滚轮缩放 · 车辆移动只更新实例矩阵，车牌文字不重建</div>
+
+<script>/*__THREE_JS__*/</script>
+<script>
+/* ================================================================
+ * 1. 字符集约定：全国 34 个省级行政区车牌汉字 + 数字 + 大写字母
+ *    与 msdf-atlas-gen 生成的图集一一对应（70 字形）
+ * ==============================================================*/
+var GLYPH_CHARS = "__GLYPH_CHARS__";
+var glyphChars = GLYPH_CHARS.split("");
+var glyphMap = {};
+for (var i = 0; i < glyphChars.length; i++) glyphMap[glyphChars[i]] = i;
+var MAX_CHARS = 8, EMPTY_GLYPH = -1;
+
+/* ================================================================
+ * 2. 内嵌图集数据（由构建脚本注入）
+ * ==============================================================*/
+var ATLAS_JSON = /*__ATLAS_JSON__*/;
+var ATLAS_PNG_DATAURL = /*__ATLAS_PNG__*/;
+
+/* ================================================================
+ * 3. 由图集 JSON 生成 glyphUVs（yOrigin=bottom，纹理 flipY=true）
+ * ==============================================================*/
+function buildGlyphUVs(atlasJson) {
+  var meta = atlasJson.atlas;
+  var byUnicode = {};
+  atlasJson.glyphs.forEach(function (g) { byUnicode[g.unicode] = g; });
+  var uvs = [];
+  for (var i = 0; i < glyphChars.length; i++) {
+    var cp = glyphChars[i].codePointAt(0);
+    var glyph = byUnicode[cp];
+    if (!glyph) throw new Error("图集缺少字形: " + glyphChars[i]);
+    var b = glyph.atlasBounds;
+    var u0 = b.left / meta.width;
+    var u1 = b.right / meta.width;
+    var v0 = meta.yOrigin === "bottom" ? b.bottom / meta.height : 1 - b.bottom / meta.height;
+    var v1 = meta.yOrigin === "bottom" ? b.top / meta.height : 1 - b.top / meta.height;
+    uvs.push(new THREE.Vector4(u0, v0, u1, v1));
+  }
+  return { uvs: uvs, meta: meta };
+}
+
+/* ================================================================
+ * 4. 模板几何体：1 个背景 Quad + 8 个字符槽 Quad（全部在原点）
+ * ==============================================================*/
+function buildPlateGeometry() {
+  var quadCount = MAX_CHARS + 1;
+  var vertexCount = quadCount * 4;
+  var positions = new Float32Array(vertexCount * 3);
+  var uvs = new Float32Array(vertexCount * 2);
+  var charSlots = new Float32Array(vertexCount);
+  var backgrounds = new Float32Array(vertexCount);
+  var indices = new Uint16Array(quadCount * 6);
+  var quadPos = [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0];
+  var quadUv = [0, 0, 1, 0, 1, 1, 0, 1];
+  for (var q = 0; q < quadCount; q++) {
+    var v = q * 4;
+    positions.set(quadPos, v * 3);
+    uvs.set(quadUv, v * 2);
+    var isBg = q === 0 ? 1 : 0;
+    for (var k = 0; k < 4; k++) { backgrounds[v + k] = isBg; charSlots[v + k] = isBg ? -1 : q - 1; }
+    indices.set([v, v + 1, v + 2, v, v + 2, v + 3], q * 6);
+  }
+  var geo = new THREE.BufferGeometry();
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geo.setAttribute("charSlot", new THREE.BufferAttribute(charSlots, 1));
+  geo.setAttribute("isBackground", new THREE.BufferAttribute(backgrounds, 1));
+  return geo;
+}
+
+/* ================================================================
+ * 5. 实例属性：两个 vec4 存 8 个字符槽 + 占用长度
+ * ==============================================================*/
+function attachPlateAttributes(geometry, capacity) {
+  var g0 = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4).fill(EMPTY_GLYPH), 4);
+  var g1 = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4).fill(EMPTY_GLYPH), 4);
+  var vis = new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1);
+  [g0, g1, vis].forEach(function (a) { a.setUsage(THREE.DynamicDrawUsage); });
+  geometry.setAttribute("aGlyphSet0", g0);
+  geometry.setAttribute("aGlyphSet1", g1);
+  geometry.setAttribute("aVisibleCount", vis);
+  return { glyph0: g0, glyph1: g1, visible: vis };
+}
+
+function writePlateText(attributes, instanceIndex, text) {
+  var chars = Array.from(text);
+  if (chars.length > MAX_CHARS) throw new RangeError("车牌最多 8 字符");
+  var base = instanceIndex * 4;
+  for (var slot = 0; slot < MAX_CHARS; slot++) {
+    var idx = slot < chars.length ? glyphMap[chars[slot]] : EMPTY_GLYPH;
+    var arr = slot < 4 ? attributes.glyph0.array : attributes.glyph1.array;
+    arr[base + slot % 4] = idx;
+  }
+  attributes.visible.array[instanceIndex] = chars.length;
+  attributes.glyph0.addUpdateRange(base, 4);
+  attributes.glyph1.addUpdateRange(base, 4);
+  attributes.visible.addUpdateRange(instanceIndex, 1);
+  attributes.glyph0.needsUpdate = true;
+  attributes.glyph1.needsUpdate = true;
+  attributes.visible.needsUpdate = true;
+}
+
+/* ================================================================
+ * 6. 完整着色器（选字 / 居中 / 背景伸缩 / 视空间 Billboard / MSDF）
+ * ==============================================================*/
+function createVertexShader() {
+  return [
+    "precision highp float;",
+    "precision highp int;",
+    "in vec3 position;",
+    "in vec2 uv;",
+    "in float charSlot;",
+    "in float isBackground;",
+    "in mat4 instanceMatrix;",
+    "in vec4 aGlyphSet0;",
+    "in vec4 aGlyphSet1;",
+    "in float aVisibleCount;",
+    "uniform mat4 modelMatrix;",
+    "uniform mat4 modelViewMatrix;",
+    "uniform mat4 projectionMatrix;",
+    "uniform float uLabelScale;",
+    "uniform float uCharSpacing;",
+    "uniform float uPadding;",
+    "uniform float uUseWorldScale;",
+    "uniform vec4 uGlyphUVs[" + glyphChars.length + "];",
+    "out vec2 vUv;",
+    "flat out float vIsBackground;",
+    "void main() {",
+    "  vUv = uv;",
+    "  vIsBackground = isBackground;",
+    "  if (aVisibleCount < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }",
+    "  vec2 localOffset = position.xy;",
+    "  if (isBackground > 0.5) {",
+    "    float contentWidth = (aVisibleCount - 1.0) * uCharSpacing + 1.0;",
+    "    localOffset *= vec2(contentWidth + 2.0 * uPadding, 1.0 + 2.0 * uPadding);",
+    "  } else {",
+    "    int slot = int(charSlot);",
+    "    float glyphIndex;",
+    "    if (slot < 4) { glyphIndex = aGlyphSet0[slot]; } else { glyphIndex = aGlyphSet1[slot - 4]; }",
+    "    if (charSlot >= aVisibleCount || glyphIndex < 0.0 || glyphIndex >= " + glyphChars.length + ".0) {",
+    "      gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return;",
+    "    }",
+    "    float centerOffset = (aVisibleCount - 1.0) * 0.5 * uCharSpacing;",
+    "    localOffset.x += charSlot * uCharSpacing - centerOffset;",
+    "    vec4 bounds = uGlyphUVs[int(glyphIndex)];",
+    "    vUv = mix(bounds.xy, bounds.zw, uv);",
+    "  }",
+    "  vec2 scale = vec2(uLabelScale);",
+    "  if (uUseWorldScale > 0.5) {",
+    "    mat4 worldMatrix = modelMatrix * instanceMatrix;",
+    "    scale *= vec2(length(worldMatrix[0].xyz), length(worldMatrix[1].xyz));",
+    "  }",
+    "  vec4 centerView = modelViewMatrix * (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0));",
+    "  vec4 vertexView = centerView + vec4(localOffset * scale, 0.0, 0.0);",
+    "  gl_Position = projectionMatrix * vertexView;",
+    "}"
+  ].join("\n");
+}
+
+var fragmentShader = [
+  "precision highp float;",
+  "uniform sampler2D uAtlas;",
+  "uniform vec2 uUnitRange;",
+  "uniform vec3 uTextColor;",
+  "uniform vec4 uBackgroundColor;",
+  "in vec2 vUv;",
+  "flat in float vIsBackground;",
+  "out vec4 fragColor;",
+  "void main() {",
+  "  vec2 footprint = max(fwidth(vUv), vec2(0.000001));",
+  "  float screenRange = max(dot(uUnitRange / footprint, vec2(0.5)), 1.0);",
+  "  if (vIsBackground > 0.5) { fragColor = uBackgroundColor; return; }",
+  "  vec3 sampleValue = texture(uAtlas, vUv).rgb;",
+  "  float middle = max(min(sampleValue.r, sampleValue.g), min(max(sampleValue.r, sampleValue.g), sampleValue.b));",
+  "  float coverage = clamp((middle - 0.5) * screenRange + 0.5, 0.0, 1.0);",
+  "  if (coverage <= 0.0) discard;",
+  "  fragColor = vec4(uTextColor, coverage);",
+  "}"
+].join("\n");
+
+/* ================================================================
+ * 7. createPlateLabels：一个 InstancedMesh 承载全部车牌
+ * ==============================================================*/
+function createPlateLabels(capacity, atlasData) {
+  var geometry = buildPlateGeometry();
+  var attributes = attachPlateAttributes(geometry, capacity);
+  var material = new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: createVertexShader(),
+    fragmentShader: fragmentShader,
+    uniforms: {
+      uAtlas: { value: atlasData.texture },
+      uGlyphUVs: { value: atlasData.uvs },
+      uUnitRange: { value: new THREE.Vector2(atlasData.meta.distanceRange / atlasData.meta.width, atlasData.meta.distanceRange / atlasData.meta.height) },
+      uTextColor: { value: new THREE.Vector3(1, 1, 1) },
+      uBackgroundColor: { value: new THREE.Vector4(0.02, 0.12, 0.36, 0.94) },
+      uLabelScale: { value: 0.55 },
+      uCharSpacing: { value: 1.0 },
+      uPadding: { value: 0.32 },
+      uUseWorldScale: { value: 1 }
+    },
+    transparent: true,
+    depthTest: true,
+    // 关键：depthWrite 必须为 true，否则标签之间不按真实深度遮挡，
+    // 绘制顺序（实例索引顺序）决定谁盖谁，远处小标签会盖住近处大标签。
+    // 同一面板的背景与文字深度相等，LessEqual 深度函数仍能正常绘制文字。
+    depthWrite: true,
+    side: THREE.FrontSide,
+    toneMapped: false
+  });
+  var mesh = new THREE.InstancedMesh(geometry, material, capacity);
+  mesh.count = 0;
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.frustumCulled = false;
+  var texts = new Array(capacity).fill(null);
+  var matrix = new THREE.Matrix4();
+  function setText(index, text) {
+    if (index < 0 || index >= capacity) return;
+    if (texts[index] === text) return;
+    var chars = Array.from(text);
+    if (chars.length > MAX_CHARS) chars = chars.slice(0, MAX_CHARS);
+    for (var i = 0; i < chars.length; i++) if (glyphMap[chars[i]] === undefined) return;
+    writePlateText(attributes, index, chars.join(""));
+    texts[index] = chars.join("");
+    mesh.count = Math.max(mesh.count, index + 1);
+  }
+  function setPosition(index, x, y, z) {
+    matrix.makeTranslation(x, y, z);
+    mesh.setMatrixAt(index, matrix);
+    mesh.instanceMatrix.addUpdateRange(index * 16, 16);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.count = Math.max(mesh.count, index + 1);
+  }
+  return {
+    mesh: mesh, setText: setText, setPosition: setPosition,
+    hide: function (i) { setText(i, ""); }
+  };
+}
+</script>
+<!--  本项目 基于  微信-公众号： 大前端私房小菜 大佬 分享的微信文章 借助AI实现的
+Three.js 高性能渲染海量车牌标签
+https://mp.weixin.qq.com/s/esIbjNbQaGbFCO0WzAQ3Yg
+ -->
+<!-- 分享的意义，文章大家上手有难度，大佬没有分享项目效果，我借助AI都搞了四五个小时才实现的 -->
